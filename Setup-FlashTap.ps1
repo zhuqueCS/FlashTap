@@ -514,8 +514,8 @@ fi
                                 Write-Log "[警告] C/C++ 扩展架构不匹配（非 linux-x64），将清理后重新安装" 'Yellow'
                                 $null = & wsl.exe -d $distroName -- bash -c 'rm -rf ~/.vscode-server/extensions/ms-vscode.cpptools-*' 2>&1
                             }
-                            # ── 通过 Marketplace API 下载并安装 linux-x64 版 cpptools ──
-                            Write-Log "[信息] 正在下载 C/C++ 扩展 (linux-x64, ~120MB)..." 'Cyan'
+                            # ── 安装固定版本 cpptools 1.21.6（兼容 VS Code 1.125，支持 console 终端配置） ──
+                            Write-Log "[信息] 正在下载 C/C++ 扩展 (v1.21.6 linux-x64, ~70MB)..." 'Cyan'
                             $extSuccess = $false
                             # 将安装脚本写入临时文件，避免 base64 管道问题
                             $cppInstallSh = Join-Path $env:TEMP 'localcoder_cpp_install.sh'
@@ -523,44 +523,13 @@ fi
 #!/bin/bash
 echo "=== CPP_INSTALL_START ==="
 
-# 1. 查询最新版本
-API_RESP=$(curl -s --max-time 30 -X POST \
-  "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json;api-version=7.2-preview" \
-  -d '{"filters":[{"criteria":[{"filterType":7,"value":"ms-vscode.cpptools"}]}],"flags":914}')
-if [ -z "$API_RESP" ]; then
-  echo "API_EMPTY"
-  exit 0
-fi
-echo "API_OK"
-
-# 2. 解析下载 URL
-VSIX_URL=$(echo "$API_RESP" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    ext = d['results'][0]['extensions'][0]
-    ver = ext['versions'][0]
-    version = ver['version']
-    files = ver.get('files', [])
-    for f in files:
-        if f.get('assetType') == 'Microsoft.VisualStudio.Services.VSIXPackage' and f.get('targetPlatform') == 'linux-x64':
-            print(f['source'])
-            break
-    else:
-        print('https://marketplace.visualstudio.com/_apis/public/gallery/publishers/ms-vscode/vsextensions/cpptools/' + version + '/vspackage?targetPlatform=linux-x64')
-except Exception as e:
-    print('PARSE_ERR:' + str(e))
-" 2>&1)
-
-if [ -z "$VSIX_URL" ] || echo "$VSIX_URL" | grep -q "PARSE_ERR"; then
-  echo "URL_FAIL:$VSIX_URL"
-  exit 0
-fi
+# 固定版本 1.21.6，兼容 VS Code 1.125 + WSL，支持 console 终端配置
+# 1.32.2 有严重兼容 bug：preLaunchTask 终端编译后销毁、不支持 integratedTerminal
+CPPTOOLS_VER="1.21.6"
+VSIX_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/ms-vscode/vsextensions/cpptools/${CPPTOOLS_VER}/vspackage?targetPlatform=linux-x64"
 echo "URL_OK:$VSIX_URL"
 
-# 3. 下载 .vsix（--compressed 自动解压 gzip）
+# 下载 .vsix（--compressed 自动解压 gzip）
 curl -sL --compressed --max-time 120 -o /tmp/cpptools.vsix "$VSIX_URL" 2>&1
 if [ ! -s /tmp/cpptools.vsix ]; then
   echo "DOWNLOAD_FAIL"
@@ -568,7 +537,7 @@ if [ ! -s /tmp/cpptools.vsix ]; then
 fi
 echo "DOWNLOAD_OK:$(wc -c < /tmp/cpptools.vsix) bytes"
 
-# 4. 验证 zip
+# 2. 验证 zip
 if ! python3 -c "import zipfile; zipfile.ZipFile('/tmp/cpptools.vsix')" 2>/dev/null; then
   echo "NOT_A_ZIP"
   head -c 200 /tmp/cpptools.vsix | xxd | head -5
@@ -576,7 +545,7 @@ if ! python3 -c "import zipfile; zipfile.ZipFile('/tmp/cpptools.vsix')" 2>/dev/n
 fi
 echo "ZIP_OK"
 
-# 5. 解压
+# 3. 解压
 VERSION=$(python3 -c "
 import zipfile, json
 z = zipfile.ZipFile('/tmp/cpptools.vsix')
@@ -599,10 +568,10 @@ for f in z.namelist():
                 out.write(z.read(f))
 " && echo "EXTRACT_OK" || echo "EXTRACT_FAIL"
 
-# 6. 修复权限
+# 4. 修复权限
 find "$EXT_DIR" -type f \( -name "*.so" -o -name "cpptools" -o -name "cpptools-srv" -o -name "cpptools-wordexp" -o -name "OpenDebugAD7" \) -exec chmod +x {} \; 2>/dev/null
 
-# 7. 验证
+# 5. 验证
 ls "$EXT_DIR/package.json" >/dev/null 2>&1 && echo "=== CPP_INSTALL_OK ===" || echo "=== CPP_INSTALL_FAIL ==="
 '@ | Out-File -FilePath $cppInstallSh -Encoding ASCII
                             # 转 WSL 路径并执行
