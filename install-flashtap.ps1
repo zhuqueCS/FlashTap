@@ -17,12 +17,7 @@ $LOG_FILE = Join-Path $PROJECT_DIR 'install.log'
 $OLLAMA_DOWNLOAD_URL = 'https://ollama.com/download/OllamaSetup.exe'
 $OLLAMA_DOWNLOAD_MIRRORS = @(
     'https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe',
-    'https://ghproxy.com/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe',
-    'https://ghproxy.net/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe',
-    'https://gh.con.sh/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe',
-    'https://gh.llkk.cc/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe',
-    'https://gitdl.cn/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe',
-    'https://gh.api.99988866.xyz/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe'
+    'https://ghproxy.net/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe'
 )
 
 # ── 日志函数 ──
