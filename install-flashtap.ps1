@@ -16,9 +16,9 @@ $LOG_FILE = Join-Path $PROJECT_DIR 'install.log'
 # ── OllamaSetup.exe 下载地址（发布 Release 后填入实际 URL） ──
 $OLLAMA_DOWNLOAD_URL = 'https://ollama.com/download/OllamaSetup.exe'
 $OLLAMA_DOWNLOAD_MIRRORS = @(
+    'https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe',
     'https://ghproxy.net/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe',
-    'https://gh.con.sh/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe',
-    'https://github.moeyy.xyz/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe'
+    'https://gh.con.sh/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe'
 )
 
 # ── 日志函数 ──
@@ -112,15 +112,16 @@ function Get-Ollama-Local-Installer {
                     $downloaded += $read
                     if (($sw.ElapsedMilliseconds -gt 500) -or ($downloaded -eq $totalBytes)) {
                         $pct = if ($totalBytes -gt 0) { [math]::Round($downloaded * 100 / $totalBytes) } else { 0 }
-                        $speed = if ($sw.ElapsedMilliseconds -gt 0) { [math]::Round($downloaded / 1MB / ($sw.Elapsed.TotalSeconds), 1) } else { 0 }
-                        $barLen = 30
-                        $filled = [math]::Round($pct * $barLen / 100)
-                        $bar = '[' + ('█' * $filled) + ('░' * ($barLen - $filled)) + ']'
-                        $downMB = [math]::Round($downloaded / 1MB, 1)
-                        $totalMB = if ($totalBytes -gt 0) { [math]::Round($totalBytes / 1MB, 1) } else { '?' }
-                        $line = "  $bar $pct%  $downMB/$totalMB MB  ${speed}MB/s"
-                        try { Write-Host $line -NoNewline; Write-Host "`r" -NoNewline } catch { }
-                        $sw.Restart()
+                    $speed = if ($sw.ElapsedMilliseconds -gt 0) { [math]::Round($downloaded / 1MB / ($sw.Elapsed.TotalSeconds), 1) } else { 0 }
+                    $barLen = 40
+                    $filled = [math]::Max(0, [math]::Round($pct * $barLen / 100))
+                    $empty = $barLen - $filled
+                    $bar = '[' + ('█' * $filled) + ('░' * $empty) + ']'
+                    $downMB = [math]::Round($downloaded / 1MB, 1)
+                    $totalMB = if ($totalBytes -gt 0) { [math]::Round($totalBytes / 1MB, 1) } else { '?' }
+                    $line = "  $bar $pct%  $downMB/$totalMB MB  ${speed}MB/s`r"
+                    try { Write-Host $line -NoNewline } catch { }
+                    $sw.Restart()
                     }
                 }
                 $fs.Close()
