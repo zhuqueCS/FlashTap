@@ -3,19 +3,6 @@
 $ErrorActionPreference = 'Continue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-# 禁用控制台快速编辑模式，防止鼠标误触导致下载卡死
-$code = @'
-[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int nStdHandle);
-[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
-[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
-'@
-$api = Add-Type -MemberDefinition $code -Name 'ConsoleAPI' -Namespace 'Win32' -PassThru
-$handle = $api::GetStdHandle(-10)
-$mode = 0
-$api::GetConsoleMode($handle, [ref]$mode)
-$ENABLE_QUICK_EDIT = 0x0040; $ENABLE_INSERT_MODE = 0x0020
-$api::SetConsoleMode($handle, $mode -band (-bnot ($ENABLE_QUICK_EDIT -bor $ENABLE_INSERT_MODE)))
-
 # ── 脚本目录检测 ──
 $PROJECT_DIR = $PSScriptRoot
 if ((-not $PROJECT_DIR) -or ($PROJECT_DIR -eq '')) {
@@ -111,7 +98,7 @@ function Get-Ollama-Local-Installer {
             try {
                 Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
                 $ProgressPreference = 'SilentlyContinue'
-                Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -ErrorAction Stop
+                Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -TimeoutSec 600 -ErrorAction Stop
 
                 if ((Test-Path -LiteralPath $installer) -and (Test-ValidExe -Path $installer)) {
                     $sizeMB = [math]::Round((Get-Item $installer).Length / 1MB, 1)
