@@ -129,6 +129,18 @@
 
 ---
 
+### Q8: Ollama 下载太慢（1-2 小时）
+
+**原因**：Ollama 安装包约 1.4GB，从 GitHub 下载，国内网络较慢
+
+**解决**：
+- 这是正常现象，首次安装需要耐心等待，后续不会再下载
+- 如果有国际网络加速，建议开启后再安装
+- 也可以提前下载 `OllamaSetup.exe`（约 1.4GB），放在脚本同目录，脚本会自动跳过下载
+- 下载地址：https://ollama.com/download/OllamaSetup.exe
+
+---
+
 ## 🔧 技术细节
 
 - 模型：Qwen2.5-Coder-7B-Instruct-Q4_KM（约 5GB）
