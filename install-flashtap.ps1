@@ -105,38 +105,6 @@ function Get-Ollama-Local-Installer {
         $downloadOk = $false
         $urls = @($OLLAMA_DOWNLOAD_MIRRORS) + @($OLLAMA_DOWNLOAD_URL)
 
-        # 快速测速：用 HEAD 请求测每个镜像的响应时间，选最快的
-        Write-Log '  [信息] 正在测速所有镜像源，选最快的...'
-        $bestUrl = $null
-        $bestTime = [long]::MaxValue
-        foreach ($url in $urls) {
-            try {
-                $sw = [System.Diagnostics.Stopwatch]::StartNew()
-                $r = [System.Net.HttpWebRequest]::Create($url)
-                $r.Method = 'HEAD'
-                $r.Timeout = 3000
-                $r.AllowAutoRedirect = $true
-                $r.MaximumAutomaticRedirections = 3
-                $resp = $r.GetResponse()
-                $resp.Close()
-                $elapsed = $sw.ElapsedMilliseconds
-                Write-Log "  [测速] ${elapsed}ms - $url" 'DarkGray'
-                if ($elapsed -lt $bestTime) {
-                    $bestTime = $elapsed
-                    $bestUrl = $url
-                }
-            } catch {
-                Write-Log "  [测速] 超时 - $url" 'DarkGray'
-            }
-        }
-
-        if ($bestUrl) {
-            Write-Log "  [信息] 最快镜像: $bestUrl (${bestTime}ms)，开始下载..."
-            $urls = @($bestUrl) + ($urls | Where-Object { $_ -ne $bestUrl })
-        } else {
-            Write-Log '  [警告] 所有镜像测速失败，依次尝试下载...'
-        }
-
         foreach ($url in $urls) {
             if ($downloadOk) { break }
             Write-Log "  [信息] 尝试: $url"
