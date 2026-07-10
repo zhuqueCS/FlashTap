@@ -83,8 +83,7 @@ function Get-Ollama-Local-Installer {
         Write-Log '  [信息] 约 300MB，请耐心等待（国内网络可能较慢）...'
 
         $downloadOk = $false
-        $urls = @($OLLAMA_DOWNLOAD_URL)
-        if ($OLLAMA_DOWNLOAD_MIRROR) { $urls += $OLLAMA_DOWNLOAD_MIRROR }
+        $urls = @($OLLAMA_DOWNLOAD_MIRROR, $OLLAMA_DOWNLOAD_URL)
 
         foreach ($url in $urls) {
             if ($downloadOk) { break }
