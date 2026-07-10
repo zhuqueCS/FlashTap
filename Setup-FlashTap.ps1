@@ -245,7 +245,7 @@ Write-Host '         4. 全自动配置，无需任何手动操作          ' -F
 Write-Host ''
 
 # ── 第一步：安装 Ollama ──
-$ollamaScript = [System.IO.Path]::Combine($PROJECT_DIR, 'install-localcoder.ps1')
+$ollamaScript = [System.IO.Path]::Combine($PROJECT_DIR, 'install-flashtap.ps1')
 if (-not (Run-Script -FilePath $ollamaScript -Description '第一步：安装 Ollama 本地大模型引擎')) {
     Write-Host ''
     Write-Host '  ╔════════════════════════════════════════════╗' -ForegroundColor Red

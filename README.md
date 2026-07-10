@@ -28,7 +28,7 @@
 |--------|------|
 | `一键安装FlashTap.bat` | 启动入口，用户双击（右键管理员）这个 |
 | `Setup-FlashTap.ps1` | 主控制脚本，按顺序执行安装 |
-| `install-localcoder.ps1` | 子脚本：安装 Ollama + 配置显存限制 6GB |
+| `install-flashtap.ps1` | 子脚本：安装 Ollama + 配置显存限制 6GB |
 | `download-models.py` | 子脚本：从魔搭下载模型 |
 | `install-vscode.ps1` | 子脚本：静默安装 VS Code + Continue 扩展 |
 | `configure-continue.py` | 子脚本：配置 Continue 对接本地 Ollama |
