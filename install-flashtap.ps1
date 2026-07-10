@@ -15,7 +15,7 @@ $LOG_FILE = Join-Path $PROJECT_DIR 'install.log'
 
 # ── OllamaSetup.exe 下载地址（发布 Release 后填入实际 URL） ──
 $OLLAMA_DOWNLOAD_URL = 'https://ollama.com/download/OllamaSetup.exe'
-$OLLAMA_DOWNLOAD_MIRROR = 'https://ghfast.top/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe'
+$OLLAMA_DOWNLOAD_MIRROR = 'https://mirror.ghproxy.com/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe'
 
 # ── 日志函数 ──
 function Write-Log {
