@@ -110,8 +110,7 @@ function Get-Ollama-Local-Installer {
 
     # winget 失败，从网络下载
     if ($OLLAMA_DOWNLOAD_URL -and ($OLLAMA_DOWNLOAD_URL -notmatch 'USER/REPO')) {
-        Write-Log '  [信息] 正在自动下载 OllamaSetup.exe...'
-        Write-Log '  [信息] 约 1.4GB，依次尝试镜像源，请耐心等待...'
+        Write-Log '  [信息] 正在自动下载 OllamaSetup.exe（约 1.4GB）...'
 
         $downloadOk = $false
         $urls = @($OLLAMA_DOWNLOAD_MIRRORS) + @($OLLAMA_DOWNLOAD_URL)
@@ -120,54 +119,62 @@ function Get-Ollama-Local-Installer {
             if ($downloadOk) { break }
             Write-Log "  [信息] 尝试: $url"
             try {
-                $ProgressPreference = 'SilentlyContinue'
-                $req = [System.Net.HttpWebRequest]::Create($url)
-                $req.Timeout = 10000
-                $req.ReadWriteTimeout = 30000
-                $req.AllowAutoRedirect = $true
-                $req.MaximumAutomaticRedirections = 5
-                $resp = $req.GetResponse()
-                $totalBytes = $resp.ContentLength
-                $respStream = $resp.GetResponseStream()
-                $fs = [System.IO.File]::Create($installer)
-                $buffer = New-Object byte[] 8192
-                $downloaded = 0L
-                $sw = [System.Diagnostics.Stopwatch]::StartNew()
-                $lastReport = 0L
-                
-                while (($read = $respStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                    $fs.Write($buffer, 0, $read)
-                    $downloaded += $read
-                    if (($sw.ElapsedMilliseconds -gt 500) -or ($downloaded -eq $totalBytes)) {
-                        $pct = if ($totalBytes -gt 0) { [math]::Round($downloaded * 100 / $totalBytes) } else { 0 }
-                    $speed = if ($sw.ElapsedMilliseconds -gt 0) { [math]::Round($downloaded / 1MB / ($sw.Elapsed.TotalSeconds), 1) } else { 0 }
-                    $barLen = 40
-                    $filled = [math]::Max(0, [math]::Round($pct * $barLen / 100))
-                    $empty = $barLen - $filled
-                    $bar = '[' + ('█' * $filled) + ('░' * $empty) + ']'
-                    $downMB = [math]::Round($downloaded / 1MB, 1)
-                    $totalMB = if ($totalBytes -gt 0) { [math]::Round($totalBytes / 1MB, 1) } else { '?' }
-                    $line = "  $bar $pct%  $downMB/$totalMB MB  ${speed}MB/s`r"
-                    try { Write-Host $line -NoNewline } catch { }
-                    $sw.Restart()
-                    }
-                }
-                $fs.Close()
-                $respStream.Close()
-                $resp.Close()
-                Write-Host ''
+                # BITS 多线程下载（Windows 自带，最快）
+                Import-Module BitsTransfer -ErrorAction SilentlyContinue
+                Start-BitsTransfer -Source $url -Destination $installer -Priority High -ErrorAction Stop
                 
                 if ((Test-Path -LiteralPath $installer) -and (Test-ValidExe -Path $installer)) {
                     Write-Log '  [成功] OllamaSetup.exe 下载完成'
                     $downloadOk = $true
                     return $installer
-                } else {
-                    Write-Log '  [错误] 下载的文件无效或损坏'
-                    Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
                 }
             } catch {
-                Write-Log "  [警告] 下载失败: $($_.Exception.Message)"
+                Write-Log "  [警告] BITS 下载失败，改用单线程: $($_.Exception.Message)"
                 Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
+                try {
+                    $ProgressPreference = 'SilentlyContinue'
+                    $req = [System.Net.HttpWebRequest]::Create($url)
+                    $req.Timeout = 10000
+                    $req.ReadWriteTimeout = 30000
+                    $req.AllowAutoRedirect = $true
+                    $req.MaximumAutomaticRedirections = 5
+                    $resp = $req.GetResponse()
+                    $totalBytes = $resp.ContentLength
+                    $respStream = $resp.GetResponseStream()
+                    $fs = [System.IO.File]::Create($installer)
+                    $buffer = New-Object byte[] 65536
+                    $downloaded = 0L
+                    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                    
+                    while (($read = $respStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                        $fs.Write($buffer, 0, $read)
+                        $downloaded += $read
+                        if ($sw.ElapsedMilliseconds -gt 500) {
+                            $pct = if ($totalBytes -gt 0) { [math]::Round($downloaded * 100 / $totalBytes) } else { 0 }
+                            $speed = [math]::Round($downloaded / 1MB / [math]::Max(1, $sw.Elapsed.TotalSeconds), 1)
+                            $barLen = 40
+                            $filled = [math]::Round($pct * $barLen / 100)
+                            $bar = '[' + ('=' * $filled) + ('>' * [math]::Min(1, $barLen - $filled)) + (' ' * [math]::Max(0, $barLen - $filled - 1)) + ']'
+                            $downMB = [math]::Round($downloaded / 1MB, 1)
+                            $totalMB = if ($totalBytes -gt 0) { [math]::Round($totalBytes / 1MB, 1) } else { '?' }
+                            Write-Host "`r  $bar $pct%  $downMB/$totalMB MB  ${speed}MB/s" -NoNewline
+                            $sw.Restart()
+                        }
+                    }
+                    $fs.Close()
+                    $respStream.Close()
+                    $resp.Close()
+                    Write-Host ''
+                    
+                    if ((Test-Path -LiteralPath $installer) -and (Test-ValidExe -Path $installer)) {
+                        Write-Log '  [成功] OllamaSetup.exe 下载完成'
+                        $downloadOk = $true
+                        return $installer
+                    }
+                } catch {
+                    Write-Log "  [警告] 单线程下载也失败: $($_.Exception.Message)"
+                    Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
+                }
             }
         }
     }
