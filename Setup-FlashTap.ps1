@@ -257,8 +257,8 @@ if (-not (Run-Script -FilePath $ollamaScript -Description '第一步：安装 Ol
     Write-Host '  ║        Ollama 安装失败，安装中止           ║' -ForegroundColor Red
     Write-Host '  ╚════════════════════════════════════════════╝' -ForegroundColor Red
     Write-Host ''
-    Write-Host '  [原因] 同目录下未找到 OllamaSetup.exe 安装包' -ForegroundColor Yellow
-    Write-Host '  [解决] 请将 OllamaSetup.exe 与脚本放在同一文件夹后重试' -ForegroundColor Yellow
+    Write-Host '  [原因] Ollama 安装异常，请查看上方日志中的 [错误] 行' -ForegroundColor Yellow
+    Write-Host '  [解决] 常见问题：网络不稳定导致下载失败、安装被安全软件拦截' -ForegroundColor Yellow
     Write-Host ''
     Write-Host '按任意键退出...' -ForegroundColor Gray
     $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
