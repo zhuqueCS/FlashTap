@@ -3,6 +3,19 @@
 $ErrorActionPreference = 'Continue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+# 禁用控制台快速编辑模式，防止鼠标误点导致下载卡死
+# 保留复制粘贴和右键功能，只禁用"点击暂停输出"这个行为
+Add-Type -Name ConsoleUtil -Namespace Win32 -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int nStdHandle);
+[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
+[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+'@
+$handle = [Win32.ConsoleUtil]::GetStdHandle(-10)
+$mode = 0
+[Win32.ConsoleUtil]::GetConsoleMode($handle, [ref]$mode) | Out-Null
+$ENABLE_QUICK_EDIT = 0x0040
+[Win32.ConsoleUtil]::SetConsoleMode($handle, $mode -band (-bnot $ENABLE_QUICK_EDIT)) | Out-Null
+
 # 自动继承系统代理设置（不用管理员模式也能走国际网络）
 $proxy = [System.Net.WebRequest]::GetSystemWebProxy()
 $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
