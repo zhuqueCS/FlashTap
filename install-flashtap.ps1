@@ -134,26 +134,27 @@ function Install-Ollama-From-Exe {
         throw '无法启动Ollama安装程序，请检查安装包是否完整'
     }
 
-    # 等待安装完成，同时持续杀掉自动启动的 Ollama GUI 进程（防止卡死）
+    # 等待安装完成，只杀自动启动的 ollama app，不杀安装程序本身
     $maxWaitSeconds = 300
     $waited = 0
     while ($waited -lt $maxWaitSeconds) {
         if ($installProcess.HasExited) { break }
-        # 每2秒杀一次 Ollama 进程，防止安装程序自动启动的 GUI 导致等待卡死
-        Kill-AllOllama -Process $null
+        # 只杀 ollama 辅助进程，不杀安装程序 OllamaSetup.exe
+        Get-Process -Name 'ollama' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Get-Process -Name 'ollama app' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
         $waited += 2
     }
 
     if (-not $installProcess.HasExited) {
-        Write-Log "  [警告] 安装程序 ${maxWaitSeconds}秒 后仍未退出，强制终止 (PID: $($installProcess.Id))..."
-        Kill-AllOllama -Process $installProcess
+        Write-Log "  [警告] 安装程序 ${maxWaitSeconds}秒 后仍未退出，强制终止..."
+        $installProcess.Kill()
     }
 
-    # 安装完成后彻底杀掉所有 Ollama 进程（包括自动启动的 GUI 托盘程序）
-    Kill-AllOllama -Process $installProcess
+    # 安装完成后杀掉 ollama 后台进程，但不再杀安装程序
     Start-Sleep -Seconds 2
-    Kill-AllOllama
+    Get-Process -Name 'ollama' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Get-Process -Name 'ollama app' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
     Write-Log '  [成功] Ollama 安装完成'
 
