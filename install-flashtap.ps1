@@ -98,7 +98,7 @@ function Get-Ollama-Local-Installer {
             try {
                 Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
                 $ProgressPreference = 'SilentlyContinue'
-                Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -TimeoutSec 600 -ErrorAction Stop
+                Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
 
                 if ((Test-Path -LiteralPath $installer) -and (Test-ValidExe -Path $installer)) {
                     $sizeMB = [math]::Round((Get-Item $installer).Length / 1MB, 1)
