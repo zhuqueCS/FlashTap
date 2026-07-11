@@ -110,8 +110,42 @@ function Get-Ollama-Local-Installer {
             Write-Log "  [信息] 尝试: $url"
             try {
                 Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
-                $ProgressPreference = 'SilentlyContinue'
-                Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+
+                $req = [System.Net.HttpWebRequest]::Create($url)
+                $req.Timeout = 30000
+                $req.ReadWriteTimeout = 30000
+                $req.AllowAutoRedirect = $true
+                $resp = $req.GetResponse()
+                $totalBytes = $resp.ContentLength
+                $respStream = $resp.GetResponseStream()
+                $fs = [System.IO.File]::Create($installer)
+                $buffer = New-Object byte[] 65536
+                $downloaded = 0L
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+
+                while (($read = $respStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    $fs.Write($buffer, 0, $read)
+                    $downloaded += $read
+                    if ($sw.ElapsedMilliseconds -ge 200) {
+                        $pct = if ($totalBytes -gt 0) { [math]::Round($downloaded * 100 / $totalBytes) } else { 0 }
+                        $speed = if ($sw.Elapsed.TotalSeconds -gt 0) { [math]::Round($downloaded / 1MB / $sw.Elapsed.TotalSeconds, 1) } else { 0 }
+                        $barLen = 30
+                        $filled = [math]::Max(0, [math]::Round($pct * $barLen / 100))
+                        $empty = $barLen - $filled
+                        $bar = '[' + ('#' * $filled) + ('-' * $empty) + ']'
+                        $downMB = [math]::Round($downloaded / 1MB, 1)
+                        $totalMB = if ($totalBytes -gt 0) { [math]::Round($totalBytes / 1MB, 1) } else { '?' }
+                        $eta = if ($speed -gt 0 -and $totalBytes -gt 0) {
+                            [math]::Round(($totalBytes - $downloaded) / 1MB / $speed / 60, 1)
+                        } else { '?' }
+                        Write-Host "`r  $bar $pct%  $downMB/$totalMB MB  ${speed}MB/s  剩余${eta}min  " -NoNewline
+                        $sw.Restart()
+                    }
+                }
+                $fs.Close()
+                $respStream.Close()
+                $resp.Close()
+                Write-Host ''  # 换行
 
                 if ((Test-Path -LiteralPath $installer) -and (Test-ValidExe -Path $installer)) {
                     $sizeMB = [math]::Round((Get-Item $installer).Length / 1MB, 1)
@@ -120,6 +154,7 @@ function Get-Ollama-Local-Installer {
                     return $installer
                 }
             } catch {
+                Write-Host ''
                 Write-Log "  [警告] 下载失败: $($_.Exception.Message)"
                 Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
             }
