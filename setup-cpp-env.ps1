@@ -51,21 +51,24 @@ function Test-GppOnPath {
 }
 
 function Test-WslExe {
-    $ErrorActionPreference = 'Stop'
     try {
         $null = Get-Command wsl.exe -ErrorAction Stop
     } catch {
-        $ErrorActionPreference = 'SilentlyContinue'
         return $false
     }
-    $ErrorActionPreference = 'SilentlyContinue'
-    return $true
+    # wsl.exe 存在不代表 WSL 功能已启用，必须实测 --status
+    try {
+        $null = & wsl.exe --status 2>$null 1>$null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
 }
 
 function Get-WslDistros {
     if (-not (Test-WslExe)) { return @() }
     $ErrorActionPreference = 'SilentlyContinue'
-    $raw = & wsl.exe --list --quiet 2>&1
+    $raw = & wsl.exe --list --quiet 2>$null
     $result = [System.Collections.Generic.List[string]]::new()
     if ($raw) {
         if ($raw -isnot [array]) {

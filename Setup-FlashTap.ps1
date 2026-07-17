@@ -84,14 +84,15 @@ FLASHTAP_ORIGINAL_PROFILE=$env:FLASHTAP_ORIGINAL_PROFILE
     $envContent | Out-File -FilePath $envFile -Encoding UTF8 -Force
     Write-Log "[调试] 写入环境文件: $envFile" 'DarkGray'
 
-    # 直接在本进程内执行子脚本（同窗口，日志直接输出到当前终端）
-    # 这样用户能在一个窗口看到所有日志，不弹新窗口
+    # 使用 Start-Process 捕获退出码（比 $LASTEXITCODE 更可靠）
+    # -NoNewWindow 保证日志输出到当前终端，不弹新窗口
     $extraArgs = if ($ArgumentList.Count -gt 0) { ' ' + ($ArgumentList -join ' ') } else { '' }
     $ec = 0
     try {
-        # 设置子脚本需要的参数并执行
-        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$FilePath"$extraArgs
-        $ec = $LASTEXITCODE
+        $proc = Start-Process -FilePath powershell.exe `
+            -ArgumentList "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$FilePath`"$extraArgs" `
+            -Wait -NoNewWindow -PassThru
+        if ($proc) { $ec = $proc.ExitCode } else { $ec = 1 }
     } catch {
         $ec = 1
         Write-Log "[错误] 执行子脚本异常: $($_.Exception.Message)" 'Red'
