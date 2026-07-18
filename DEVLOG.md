@@ -1,10 +1,12 @@
 # FlashTap 开发日志 / Bug 记录
 
 > 记录开发过程中遇到的每一个坑，方便后来人避开。
+>
+> 本项目从立项到跑通经历了 **40+ 个 Bug**，以下按时间顺序记录。
 
 ---
 
-## 2026-07-10 · Ollama 下载攻坚日
+## 第一阶段 · 下载攻坚（2026-07-10）
 
 ### Bug #1: PowerShell 管理员模式不继承系统代理
 
@@ -25,35 +27,29 @@ $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
 
 ### Bug #2: 控制台快速编辑模式导致下载卡死
 
-**现象**：下载过程中鼠标不小心点到终端空白区域，下载进程立即卡住不动。
+**现象**：下载过程中鼠标点到终端空白区域，下载进程立即卡住不动。
 
-**原因**：Windows 控制台默认开启"快速编辑模式"，点击终端会进入文本选择状态，暂停所有控制台输出。而脚本用 `\r` 实时刷新进度条，输出被阻塞后整个下载流程卡死。
+**原因**：Windows 控制台默认开启"快速编辑模式"，点击终端会进入文本选择状态，暂停所有控制台输出。
 
-**尝试方案**：用 kernel32.dll 的 `SetConsoleMode` 禁用快速编辑模式。
-**放弃原因**：禁用后用户无法复制粘贴日志，反而影响调试。
-
-**最终方案**：接受这个行为，不显示实时进度条，改用简单日志输出。用户需要复制日志时正常操作，下载期间不要点击终端即可。
+**解决**：bat 文件增加提示，告知用户选中文字后按 Enter 复制，再按 Enter 恢复。
 
 ---
 
 ### Bug #3: BITS 多线程下载卡在 85MB
 
-**现象**：用 `Start-BitsTransfer` 下载 1.4GB 文件，到 85MB 左右不动了。
+**现象**：`Start-BitsTransfer` 下载 1.4GB 文件，到 85MB 左右不动了。
 
-**原因**：BITS 依赖服务器支持 Range 请求，且对网络中断处理较差。免费镜像服务器（ghproxy）可能不支持或不稳定。
+**原因**：BITS 依赖服务器支持 Range 请求，免费镜像可能不支持。
 
-**解决**：放弃 BITS，改用 `Invoke-WebRequest -OutFile`，最稳定。
+**解决**：改用 `HttpWebRequest` 手动下载 + 进度条。
 
 ---
 
-### Bug #4: Winget 安装 Ollama 失败
+### Bug #4: Winget 安装 Ollama 卡在协议确认页
 
-**现象**：`winget install Ollama.Ollama` 卡在协议确认页面。
+**现象**：`winget install Ollama.Ollama` 卡住不动。
 
-**尝试方案**：加 `--accept-package-agreements --accept-source-agreements --force`。
-**结果**：依然失败，winget 底层也是从 GitHub 下载，没有加速效果。
-
-**最终方案**：移除 winget 尝试，直接网络下载。
+**解决**：移除 winget，直接网络下载安装包。
 
 ---
 
@@ -65,75 +61,250 @@ $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
 |------|------|
 | ghproxy.com | ❌ 超时（已挂） |
 | gh.con.sh | ❌ 返回 suspended.txt（已停用） |
-| gh.llkk.cc | 未测试 |
-| gitdl.cn | 未测试 |
-| gh.api.99988866.xyz | 未测试 |
-| ghproxy.net | ✅ 唯一可用，速度约 186KB/s |
+| ghproxy.net | ✅ 可用 |
 
-**教训**：免费镜像不稳定，随时可能挂。不要依赖太多镜像，保留 1-2 个有效 + GitHub 直连即可。
+**解决**：保留 `ghproxy.net` + GitHub 直连 + ollama.com 官方源。
 
 ---
 
-### Bug #6: `ForEach-Object -Parallel` 在 PowerShell 5.1 不兼容
+### Bug #6: PowerShell 5.1 不支持 ForEach-Object -Parallel
 
-**现象**：尝试用 `$chunks | ForEach-Object -Parallel { ... }` 实现多线程分块下载，脚本直接报错。
+**原因**：`-Parallel` 是 PowerShell 7.0+ 特性，Windows 10/11 默认是 5.1。
 
-**原因**：`-Parallel` 参数是 PowerShell 7.0+ 才引入的，Windows 10/11 默认的 PowerShell 5.1 不支持。
-
-**解决**：放弃多线程分块下载，回退到单线程 `Invoke-WebRequest`。
+**解决**：放弃多线程，用单线程顺序下载。
 
 ---
 
-### Bug #7: `Register-ObjectEvent` 回调中变量作用域问题
+### Bug #7: Invoke-WebRequest 无超时导致永久卡死
 
-**现象**：用 `$wc.DownloadFileAsync()` + `Register-ObjectEvent` 显示下载进度，事件回调中无法访问外部变量 `$sw`（秒表）。
-
-**原因**：`Register-ObjectEvent -Action` 脚本块在独立 Runspace 中运行，无法访问调用方的局部变量。
-
-**解决**：放弃异步下载 + 事件回调，改用同步 `Invoke-WebRequest`。
+**解决**：`HttpWebRequest.Timeout = 30000` + `ReadWriteTimeout = 120000`。
 
 ---
 
-### Bug #8: `Invoke-WebRequest` 无超时导致永久卡死
+## 第二阶段 · 编码与格式坑（2026-07-16）
 
-**现象**：`Invoke-WebRequest` 连接镜像源时无限等待，没有任何错误提示。
+### Bug #8: PowerShell 脚本必须用 CRLF 换行符
 
-**原因**：默认不设超时，连接不上会一直等。
+**现象**：脚本报"意外的标记 }"或"Try 语句缺少自己的 Catch"。
 
-**解决**：加 `-TimeoutSec 600`（10 分钟），超时后自动跳到下一个镜像。
+**原因**：`.ps1` 文件被编辑工具改成了 LF 换行符，PowerShell 5.1 对 LF 换行解析有问题。
+
+**解决**：所有 `.ps1` 和 `.bat` 文件必须保存为 CRLF + UTF-8 BOM。
+
+---
+
+### Bug #9: bat 文件双重 BOM
+
+**现象**：`一键安装FlashTap.bat` 无法执行，cmd 报语法错误。
+
+**原因**：文件开头有 `EF BB BF EF BB BF`（两个 BOM）。
+
+**解决**：用 Python 脚本去除多余 BOM，只保留一个。
+
+---
+
+### Bug #10: here-string 语法错误导致脚本崩溃
+
+**现象**：`Setup-FlashTap.ps1` 第 83 行报 `Unrecognized token`。
+
+**原因**：here-string 的 `@"` 开始标记被放成独立一行且带缩进，PowerShell 要求 `@"` 必须在赋值语句同一行末尾，结束标记 `"@` 必须在行首。
+
+**解决**：
 ```powershell
-Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -TimeoutSec 600
+# 正确写法
+$content = @"
+line1
+line2
+"@
 ```
 
 ---
 
-### Bug #9: HEAD 请求测速反而卡住下载
+## 第三阶段 · VS Code 检测与安全（2026-07-17）
 
-**现象**：用 `HttpWebRequest.Method = 'HEAD'` 逐个测 7 个镜像的响应时间，结果测速阶段就卡住，下载永远不开始。
+### Bug #11: VS Code 检测逻辑损坏用户 VS Code（严重）
 
-**原因**：`HttpWebRequest.Timeout` 在某些网络环境下对 HEAD 请求不生效，导致 `GetResponse()` 阻塞。
+**现象**：用户正在用的 VS Code 被 FlashTap 重装覆盖，导致损坏打不开。
 
-**解决**：去掉测速环节，直接按顺序尝试镜像下载。
+**根因链**：
+1. VS Code 装在 `D:\Microsoft VS Code`（系统级，D 盘）
+2. VS Code 正在运行，`Code.exe` 被进程锁定
+3. `Test-RealVSCode` 用 `Get-Item Code.exe` 抛异常 → 误判未安装
+4. 脚本下载安装器覆盖安装 → 文件损坏
+
+**解决方案（三层安全锁）**：
+
+| 层级 | 措施 |
+|------|------|
+| 第 1 层 | 新增 `Test-VSCodeInstalled`，通过 `resources\` 子目录判断，不依赖 `Code.exe` 可读 |
+| 第 2 层 | 系统级 VS Code 只复用不重装 |
+| 第 3 层 | 最终安全锁：注册表有任何 VS Code 记录时绝不安装 |
 
 ---
 
-### Bug #10: GitHub 国内访问不稳定（非代码问题）
+### Bug #12: Remove-NonWhitelistExtensions 卸载用户已有扩展
 
-**现象**：同一份代码，有时候 10 秒 push 成功，有时候 30 分钟 push 不上去。OllamaSetup.exe 下载速度波动极大（50KB/s ~ 500KB/s）。
+**现象**：用户的 CodeGeeX、Copilot 等扩展被 FlashTap 卸载。
 
-**原因**：中国到 GitHub 的国际出口带宽有限，受运营商、时段、国际线路拥堵等因素影响，属于基础设施问题，代码无法解决。
+**解决**：禁用 `Remove-NonWhitelistExtensions`，只新增不删除。
 
-**缓解措施**：
-- 允许用户提前下载 `OllamaSetup.exe` 放同目录跳过下载
-- README 中说明预计 1-2 小时，让用户有心理预期
-- 建议用户开启国际网络加速
+---
+
+### Bug #13: taskkill /F /IM Code.exe 全局杀进程
+
+**现象**：脚本杀掉了用户正在用的所有 VS Code 窗口。
+
+**解决**：移除所有 `taskkill Code.exe`，改为只警告不杀。
+
+---
+
+### Bug #14: OLLAMA_MAX_VRAM=6（应为 6144）
+
+**原因**：单位是 MB，`6` 表示 6MB，显存限制完全失效。
+
+**解决**：改为 `6144`（6GB）。
+
+---
+
+### Bug #15: extensions.list 含 cpptools 导致 WSL 二进制不兼容
+
+**原因**：Windows 端装 cpptools 会拿到 Windows 二进制，WSL 中报"二进制不兼容"。
+
+**解决**：从 `extensions.list` 移除 cpptools，WSL 端单独装 linux-x64 版。
+
+---
+
+## 第四阶段 · 虚拟机与多环境兼容（2026-07-18）
+
+### Bug #16: D 盘 ollama_models 目录权限拒绝
+
+**现象**：虚拟机 D 盘只读，`New-Item` 抛 `Access denied`。
+
+**解决**：模型目录改为实测可写性（创建 + 写探测文件 + 删除），不可写时回退用户目录。
+
+---
+
+### Bug #17: ollama list 检测超时（5 秒不够）
+
+**现象**：虚拟机后台进程启动慢，5 秒超时误判"未运行"。
+
+**解决**：改为 3 次 10 秒轮询重试（共 30 秒）+ 启动后 60 秒就绪校验。
+
+---
+
+### Bug #18: ollama create 失败后重复下载 4.7GB
+
+**现象**：ModelScope 已下载 GGUF 文件，`ollama create` 失败后走 `ollama pull` 重新下载。
+
+**解决**：
+1. `ollama create` 尝试 2 种 Modelfile 格式（完整模板 + 最简 `FROM`）
+2. `ollama pull` 前先 `ollama list` 检查本地是否已有模型
+
+---
+
+### Bug #19: Run-Script 退出码捕获不可靠
+
+**现象**：子脚本退出码 1，但主脚本打印"成功"。
+
+**根因**：`$LASTEXITCODE` 为 `$null` 时被强制设为 0（成功）。
+
+**解决**：`$LASTEXITCODE` 为 `$null` 时视为失败（`$ec = 1`）。
+
+---
+
+### Bug #20: install-vscode.ps1 脚本目录获取失败
+
+**现象**：通过 `cmd /c` 调用时 `$MyInvocation.MyCommand.Path` 为空，脚本 `exit 1`。
+
+**解决**：增加 4 层兜底：`$PSCommandPath` → `$MyInvocation` → `$script:MyInvocation` → `$PWD`。
+
+---
+
+## 第五阶段 · 中文用户名兼容（2026-07-19）
+
+### Bug #21: cmd /c 传递中文路径乱码（严重）
+
+**现象**：用户名 `本人2`，`cmd /c powershell.exe -File "C:\Users\本人2\..."` 路径乱码，脚本找不到。
+
+**原因**：`cmd /c` 在中文 Windows 下默认用 GBK 编码，传递 UTF-8 中文路径会乱码。
+
+**解决**：改用 `& 'powershell.exe' @psArgs` 直接调用（PowerShell 内部传参，不走 cmd）。
+
+---
+
+### Bug #22: .flashtap-env.txt 中文用户名乱码
+
+**现象**：写入用 UTF-8，读取用默认 GBK，中文用户名 `本人2` 乱码。
+
+**解决**：`Get-Content` 加 `-Encoding UTF8`。
+
+---
+
+### Bug #23: 空白账户隔离模式未检测到 D 盘 VS Code
+
+**现象**：系统级 VS Code 装在 `D:\Microsoft VS Code`，隔离模式检测代码只查 `ProgramFiles`。
+
+**解决**：增加 HKLM 注册表查询，覆盖所有系统级安装位置。
+
+---
+
+### Bug #24: 全局 try/catch 中 ReadKey 在非交互模式闪退
+
+**现象**：`$Host.UI.RawUI.ReadKey` 在某些环境下抛异常，catch 块自己也崩溃。
+
+**解决**：`ReadKey` 包 try/catch，失败时回退 `cmd /c pause`。
+
+---
+
+## 第六阶段 · VS Code 下载与配置（2026-07-19）
+
+### Bug #25: VS Code 下载只有官方源，虚拟机网络不通就失败
+
+**解决**：增加 4 个镜像源（官方 + Azure中国 + 华为 + 清华）。
+
+---
+
+### Bug #26: VS Code 路径验证缺失
+
+**现象**：`Install-VSCode-WithRetry` 返回无效路径，但 `Main` 函数继续装扩展导致退出码 2。
+
+**解决**：`Main` 函数增加 `Test-Path` 验证，路径无效时直接 `throw`。
+
+---
+
+### Bug #27: settings.json 污染其他 AI 插件配置
+
+**现象**：`settings.json` 塞了 CodeGeeX/Copilot/FittenCode/openclaw 等其他 AI 插件的配置。
+
+**解决**：移除所有非 FlashTap 相关配置。
 
 ---
 
 ## 经验总结
 
-1. **.NET 网络栈 ≠ 系统网络栈**：PowerShell 用 .NET 发请求，和 `curl.exe` 走不同路径，代理设置需要单独配置。
-2. **Windows 控制台有很多历史遗留问题**：快速编辑模式、CRLF 换行符、UTF-8 BOM 等都是坑。
-3. **PowerShell 5.1 是 Windows 默认版本**：不要用 PowerShell 7+ 才有的特性（`-Parallel`、三元运算符等）。
-4. **免费的东西不可靠**：GitHub 镜像随时可能挂，不要依赖。
-5. **大文件下载在国内是硬伤**：1.4GB 从 GitHub 下载，MVP 阶段只能接受慢，后续有钱了上 CDN。
+### 网络相关
+1. **.NET 网络栈 ≠ 系统网络栈**：PowerShell 用 .NET 发请求，代理需要单独配置
+2. **免费镜像不可靠**：GitHub 镜像随时可能挂，不要依赖
+3. **大文件下载是国内硬伤**：1.4GB 从 GitHub 下载，只能靠多镜像 + 离线包
+
+### Windows 相关
+4. **控制台快速编辑模式**是历史遗留坑，点击会暂停输出
+5. **CRLF 换行符**：PowerShell 5.1 对 LF 换行解析有问题
+6. **UTF-8 BOM**：`.ps1` 和 `.bat` 必须有 BOM，且不能双重
+7. **中文用户名路径**：`cmd /c` 传中文路径会乱码，必须用 PowerShell 直接调用
+
+### PowerShell 相关
+8. **PowerShell 5.1 是默认版本**：不要用 7+ 特性
+9. **here-string 语法严格**：`@"` 必须行末，`"@` 必须行首
+10. **$LASTEXITCODE 为 null 时不是成功**：进程崩溃 / 语法错误都会导致 null
+11. **`$MyInvocation.MyCommand.Path` 在子进程中可能为空**：需要多层兜底
+
+### 安全相关
+12. **绝不重装已安装的软件**：只复用，避免损坏运行中的实例
+13. **绝不卸载用户已有扩展**：只新增不删除
+14. **绝不全局杀进程**：按用户名过滤，避免误杀其他用途的进程
+
+### 测试相关
+15. **虚拟机测试能发现权限/网络问题**：但无 GPU，不能验证推理
+16. **空白账户测试能发现隔离问题**：但受系统级软件干扰
+17. **空白电脑测试是最终验收标准**：100% 还原真实用户体验
