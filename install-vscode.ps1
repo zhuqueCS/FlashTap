@@ -54,7 +54,8 @@ if ($PROJECT_DIR -eq $null -or $PROJECT_DIR -eq "") {
 # 必须放脚本目录，不要放 %TEMP%——提权后 TEMP 指向不同用户，读不到！
 $envFile = Join-Path $PROJECT_DIR '.flashtap-env.txt'
 if (Test-Path $envFile) {
-    Get-Content $envFile | ForEach-Object {
+    # 必须用 -Encoding UTF8 读取（写入时是 UTF8，中文用户名否则会乱码）
+    Get-Content $envFile -Encoding UTF8 | ForEach-Object {
         $key, $value = $_ -split '=', 2
         if ($key -and $value) { Set-Item "env:$key" $value }
     }

@@ -22,7 +22,7 @@ $LOG_FILE = Join-Path $PROJECT_DIR 'install.log'
 # 必须放脚本目录，不要放 %TEMP%——提权后 TEMP 指向不同用户，读不到！
 $envFile = Join-Path $PROJECT_DIR '.flashtap-env.txt'
 if (Test-Path $envFile) {
-    Get-Content $envFile | ForEach-Object {
+    Get-Content $envFile -Encoding UTF8 | ForEach-Object {
         $key, $value = $_ -split '=', 2
         if ($key -and $value) { Set-Item "env:$key" $value }
     }

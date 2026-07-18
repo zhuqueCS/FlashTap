@@ -56,18 +56,46 @@ $LOG_FILE = [System.IO.Path]::Combine($PROJECT_DIR, 'install.log')
 $env:FLASHTAP_USER_SCOPE_ONLY = 'false'
 $userOllama = Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'
 $userVSCode = Join-Path $env:LOCALAPPDATA 'Programs\Microsoft VS Code\Code.exe'
-$sysOllama = Join-Path ${env:ProgramFiles} 'Ollama\ollama.exe'
-$sysVSCode = Join-Path ${env:ProgramFiles} 'Microsoft VS Code\Code.exe'
 
 $userHasOllama = Test-Path -LiteralPath $userOllama
 $userHasVSCode = Test-Path -LiteralPath $userVSCode
-$sysHasOllama = Test-Path -LiteralPath $sysOllama
-$sysHasVSCode = Test-Path -LiteralPath $sysVSCode
+
+# 检测系统级软件：查标准路径 + 注册表（含 D 盘等非标准位置）
+$sysHasOllama = $false
+$sysHasVSCode = $false
+
+# 系统级 Ollama
+$sysOllamaPaths = @(
+    (Join-Path ${env:ProgramFiles} 'Ollama\ollama.exe'),
+    (Join-Path ([Environment]::GetEnvironmentVariable("ProgramFiles(x86)")) 'Ollama\ollama.exe')
+)
+foreach ($p in $sysOllamaPaths) {
+    if (Test-Path -LiteralPath $p) { $sysHasOllama = $true; break }
+}
+
+# 系统级 VS Code：标准路径 + HKLM 注册表（含 D 盘等非标准位置）
+$sysVSCodePaths = @(
+    (Join-Path ${env:ProgramFiles} 'Microsoft VS Code\Code.exe'),
+    (Join-Path ([Environment]::GetEnvironmentVariable("ProgramFiles(x86)")) 'Microsoft VS Code\Code.exe')
+)
+foreach ($p in $sysVSCodePaths) {
+    if (Test-Path -LiteralPath $p) { $sysHasVSCode = $true; break }
+}
+if (-not $sysHasVSCode) {
+    # 查 HKLM 注册表（系统级安装可能在 D 盘等非标准位置）
+    try {
+        $hklmEntries = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue
+        foreach ($entry in $hklmEntries) {
+            if ($entry.DisplayName -like '*Visual Studio Code*') { $sysHasVSCode = $true; break }
+        }
+    } catch {}
+}
 
 if ((-not $userHasOllama -and $sysHasOllama) -or (-not $userHasVSCode -and $sysHasVSCode)) {
     $env:FLASHTAP_USER_SCOPE_ONLY = 'true'
     Write-Host "  [信息] 检测到系统级软件存在但当前账户无用户级副本，启用空白账户隔离模式" -ForegroundColor Cyan
     Write-Host "         将为当前账户安装独立的用户级副本，不受系统级软件干扰" -ForegroundColor DarkGray
+    Write-Host "  [调试] 用户级 Ollama=$userHasOllama VSCode=$userHasVSCode | 系统级 Ollama=$sysHasOllama VSCode=$sysHasVSCode" -ForegroundColor DarkGray
 }
 
 function Write-Log {
@@ -105,20 +133,21 @@ FLASHTAP_USER_SCOPE_ONLY=$env:FLASHTAP_USER_SCOPE_ONLY
     $envContent | Out-File -FilePath $envFile -Encoding UTF8 -Force
     Write-Log "[调试] 写入环境文件: $envFile" 'DarkGray'
 
-    # 用 cmd /c 调用 powershell.exe（最可靠：stdout 输出到终端，退出码通过 %errorlevel% 传递）
-    $cmdLine = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$FilePath`""
+    # 用 & 直接调用 powershell.exe（同窗口，日志直接输出到当前终端）
+    # 不用 cmd /c（中文路径在 cmd 下会乱码）
+    # 用 -Command 方式调用，路径用单引号包裹避免特殊字符问题
+    $psArgs = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $FilePath)
     if ($ArgumentList.Count -gt 0) {
-        foreach ($a in $ArgumentList) {
-            $cmdLine += " `"$a`""
-        }
+        $psArgs += $ArgumentList
     }
 
     $ec = 1  # 默认失败
     try {
         $global:LASTEXITCODE = $null
-        & cmd /c $cmdLine
-        $ec = $LASTEXITCODE
-        if ($null -eq $ec) {
+        & 'powershell.exe' @psArgs
+        if ($global:LASTEXITCODE -ne $null) {
+            $ec = [int]$global:LASTEXITCODE
+        } else {
             $ec = 1
             Write-Log '[警告] 子进程未返回退出码（可能崩溃或语法错误）' 'Yellow'
         }
