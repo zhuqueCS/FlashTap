@@ -87,11 +87,15 @@ FLASHTAP_ORIGINAL_PROFILE=$env:FLASHTAP_ORIGINAL_PROFILE
     # 直接在本进程内调用子脚本（同窗口，日志直接输出，最可靠）
     # 不用 Start-Process（会有 -NoNewWindow/-PassThru 兼容性问题）
     $extraArgs = if ($ArgumentList.Count -gt 0) { ' ' + ($ArgumentList -join ' ') } else { '' }
-    $ec = 0
+    $ec = 1  # 默认失败，只有 $LASTEXITCODE 明确为 0 才算成功
     try {
         & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$FilePath"$extraArgs
-        $ec = $LASTEXITCODE
-        if ($null -eq $ec) { $ec = 0 }
+        # $LASTEXITCODE 为 null 说明进程异常终止（如被 QuickEdit 中断），视为失败
+        if ($LASTEXITCODE -ne $null) {
+            $ec = $LASTEXITCODE
+        } else {
+            Write-Log "[警告] 子进程未返回退出码（可能被中断）" 'Yellow'
+        }
     } catch {
         $ec = 1
         Write-Log "[错误] 执行子脚本异常: $($_.Exception.Message)" 'Red'
@@ -445,7 +449,8 @@ $vscodeResult = Run-Script -FilePath $vscodeScript -Description '第二步：安
 if ($vscodeResult) {
     Write-Log '[成功] VS Code 安装配置完成' 'Green'
 } else {
-    Write-Log '[警告] VS Code 安装配置未完全成功，将跳过，可稍后手动安装' 'Yellow'
+    Write-Log '[错误] VS Code 安装配置失败，后续步骤可能无法完成' 'Red'
+    Write-Log '[信息] 将继续执行后续步骤（模型下载等），请稍后手动安装 VS Code' 'Yellow'
 }
 
 # ── 第二步半：C++ 编译环境配置（不阻塞主流程） ──

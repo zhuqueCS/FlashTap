@@ -60,7 +60,9 @@ try { $p = [System.Net.WebRequest]::GetSystemWebProxy(); $p.Credentials = [Syste
 $LOG_FILE = [System.IO.Path]::Combine($PROJECT_DIR, 'vscode-install.log')
 
 $VSCODE_DOWNLOAD_URLS = @(
-    'https://update.code.visualstudio.com/latest/win32-x64-user/stable'
+    'https://update.code.visualstudio.com/latest/win32-x64-user/stable',
+    'https://vscode.cdn.azure.cn/stable/488a1f239235055e34e673291fb8d8e7d741a67a/VSCodeUserSetup-x64-1.95.3.exe',
+    'https://mirrors.huaweicloud.com/visual-studio-code/VSCodeUserSetup-x64-1.95.3.exe'
 )
 
 function Write-Log {
@@ -645,6 +647,12 @@ function Main {
     # Step 1: 安装 VS Code（或找到已安装）
     $codeCmd = Install-VSCode-WithRetry
     Write-Log "[信息] VS Code: $codeCmd"
+
+    # 验证返回的路径真实存在（防止返回无效路径导致后续扩展安装失败）
+    if (-not $codeCmd -or -not (Test-Path -LiteralPath $codeCmd)) {
+        throw "VS Code 安装后路径无效或不存在: $codeCmd"
+    }
+    Write-Log "[成功] VS Code 路径验证通过" 'INFO'
 
     # Step 2: 安装白名单扩展（5个，逐个安装，60s超时，重试2次）
     $extSuccess = Install-All-Extensions -VSCodeCmd $codeCmd

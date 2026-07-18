@@ -10,6 +10,8 @@ echo =============================================
 echo.
 echo [INFO] This installation takes 10-20 minutes
 echo [INFO] Fully automatic, please do not close this window
+echo [TIP] To copy log: select text, press Enter to copy
+echo      After copying, press Enter again to resume
 echo.
 
 rem Check administrator privileges
