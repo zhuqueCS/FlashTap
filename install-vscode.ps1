@@ -62,7 +62,8 @@ $LOG_FILE = [System.IO.Path]::Combine($PROJECT_DIR, 'vscode-install.log')
 $VSCODE_DOWNLOAD_URLS = @(
     'https://update.code.visualstudio.com/latest/win32-x64-user/stable',
     'https://vscode.cdn.azure.cn/stable/488a1f239235055e34e673291fb8d8e7d741a67a/VSCodeUserSetup-x64-1.95.3.exe',
-    'https://mirrors.huaweicloud.com/visual-studio-code/VSCodeUserSetup-x64-1.95.3.exe'
+    'https://mirrors.huaweicloud.com/visual-studio-code/1.95.3/VSCodeUserSetup-x64-1.95.3.exe',
+    'https://mirrors.tuna.tsinghua.edu.cn/vscode/1.95.3/VSCodeUserSetup-x64-1.95.3.exe'
 )
 
 function Write-Log {
@@ -116,8 +117,8 @@ function Invoke-RobustDownload {
 
     try {
         $req = [System.Net.HttpWebRequest]::Create($Url)
-        $req.Timeout = 30000
-        $req.ReadWriteTimeout = 30000
+        $req.Timeout = 60000          # 连接超时 60 秒（虚拟机网络慢）
+        $req.ReadWriteTimeout = 120000 # 读写间隔超时 120 秒
         $req.AllowAutoRedirect = $true
         $resp = $req.GetResponse()
         $totalBytes = $resp.ContentLength
