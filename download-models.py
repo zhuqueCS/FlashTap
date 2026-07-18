@@ -219,6 +219,48 @@ def _pull_from_registry():
             return
 
 
+def check_model_exists():
+    """检测模型是否已存在且可用，避免重复下载。"""
+    write_log("正在检测模型是否已存在...")
+    try:
+        result = subprocess.run(
+            ["ollama", "list"],
+            capture_output=True, encoding='utf-8', errors='replace', timeout=10
+        )
+        stdout = result.stdout or ""
+        if "qwen2.5-coder:7b" not in stdout:
+            write_log("未检测到模型 qwen2.5-coder:7b，需要下载")
+            return False
+
+        write_log("检测到模型 qwen2.5-coder:7b 已存在，验证可用性...")
+        test_result = subprocess.run(
+            ["ollama", "run", "qwen2.5-coder:7b", "hi"],
+            capture_output=True, encoding='utf-8', errors='replace', timeout=120
+        )
+        if test_result.returncode == 0:
+            write_log("模型验证通过，无需重新下载")
+            return True
+        else:
+            stderr = test_result.stderr or ""
+            write_log(f"模型存在但验证失败: {stderr}")
+            write_log("将删除旧模型并重新下载")
+            try:
+                subprocess.run(["ollama", "rm", "qwen2.5-coder:7b"],
+                               capture_output=True, timeout=10)
+            except Exception:
+                pass
+            return False
+    except subprocess.TimeoutExpired:
+        write_log("模型检测超时，将尝试下载")
+        return False
+    except FileNotFoundError:
+        write_log("未找到 ollama 命令，将尝试下载")
+        return False
+    except Exception as e:
+        write_log(f"模型检测异常: {e}，将尝试下载")
+        return False
+
+
 def verify_model():
     write_log("正在验证 Ollama 中的模型（实际加载测试）...")
     try:
@@ -451,10 +493,51 @@ def check_and_update_ollama():
             write_log("手动安装完成后重新运行本脚本即可")
             return
 
-        # 等待 Ollama 服务就绪
+        # 安装完成后，彻底停止所有 Ollama 进程并重启服务（确保使用新版本和正确环境变量）
+        write_log("正在停止所有 Ollama 进程以应用新版本...")
+        for stop_cmd in [
+            ["sc", "stop", "ollama"],
+            ["net", "stop", "ollama"],
+            ["taskkill", "/f", "/im", "ollama.exe"],
+            ["taskkill", "/f", "/im", "ollama app.exe"],
+        ]:
+            try:
+                subprocess.run(stop_cmd, capture_output=True, timeout=10)
+            except Exception:
+                pass
+        time.sleep(5)
+
+        # 设置正确的环境变量（无中文路径）
+        models_dir = os.environ.get("OLLAMA_MODELS", r"D:\ollama_models")
+        home_dir = os.environ.get("OLLAMA_HOME", r"D:\ollama_data")
+        os.environ["OLLAMA_MODELS"] = models_dir
+        os.environ["OLLAMA_HOME"] = home_dir
+
+        # 用 PowerShell 显式传环境变量启动 ollama serve
+        write_log("正在使用正确环境变量启动 Ollama 服务...")
+        try:
+            ps_cmd = (
+                f'$env:OLLAMA_MODELS="{models_dir}"; '
+                f'$env:OLLAMA_HOME="{home_dir}"; '
+                f'Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden'
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
+                capture_output=True, timeout=10,
+            )
+            write_log("Ollama serve 已通过 PowerShell 后台启动")
+        except Exception as e:
+            write_log(f"PowerShell 启动失败: {e}，尝试 sc start 兜底")
+            try:
+                subprocess.run(["sc", "start", "ollama"], capture_output=True, timeout=15)
+            except Exception:
+                pass
+
+        # 等待 Ollama 服务就绪（最多 60 秒）
         write_log("等待 Ollama 服务启动...")
-        for i in range(30):
-            time.sleep(2)
+        service_ready = False
+        for i in range(60):
+            time.sleep(1)
             try:
                 probe = subprocess.run(
                     ["ollama", "list"],
@@ -462,10 +545,11 @@ def check_and_update_ollama():
                 )
                 if probe.returncode == 0:
                     write_log("Ollama 服务已就绪")
+                    service_ready = True
                     break
             except Exception:
                 pass
-        else:
+        if not service_ready:
             write_log("警告: Ollama 服务可能未完全启动，继续执行...")
 
         # 比对安装前后版本
@@ -502,46 +586,113 @@ def check_and_update_ollama():
 
 
 def ensure_ollama_paths():
-    r"""确保 Ollama 使用 D 盘无中文路径，避免 llama.cpp 编码问题。
+    r"""确保 Ollama 使用无中文路径，避免 llama.cpp 编码问题。
     Ollama Windows 服务以 SYSTEM 账户运行，看不到用户级环境变量，
     默认使用 %USERPROFILE%\.ollama，中文用户名会导致 llama.cpp 崩溃。
 
-    策略：先尝试重启 Windows 服务；若失败（用户级安装），则 spawn ollama serve。"""
-    models_dir = r"D:\ollama_models"
-    home_dir = r"D:\ollama_data"
+    策略：优先 D 盘，不可用则回退用户目录（确保无中文）。"""
 
-    os.makedirs(models_dir, exist_ok=True)
-    os.makedirs(home_dir, exist_ok=True)
+    # 智能选择模型目录：D盘可用则用D盘，否则用用户目录
+    models_dir = None
+    home_dir = None
 
-    # 1. 停止所有 ollama 进程
-    write_log("正在停止 Ollama 进程...")
-    subprocess.run(["sc", "stop", "ollama"], capture_output=True)
-    subprocess.run(["taskkill", "/f", "/im", "ollama.exe"], capture_output=True)
-    subprocess.run(["taskkill", "/f", "/im", "ollama app.exe"], capture_output=True)
-    time.sleep(3)
+    # 优先尝试 D 盘（虚拟机可能没有 D 盘）
+    preferred = [
+        (r"D:\ollama_models", r"D:\ollama_data"),
+    ]
+    for md, hd in preferred:
+        try:
+            # 先检查驱动器是否存在（避免在无盘驱动器上卡死）
+            drive_letter = md[:2]
+            if not os.path.exists(drive_letter):
+                write_log(f"驱动器 {drive_letter} 不存在，跳过")
+                continue
 
-    # 2. 设置当前进程环境变量
-    os.environ["OLLAMA_MODELS"] = models_dir
-    os.environ["OLLAMA_HOME"] = home_dir
+            os.makedirs(md, exist_ok=True)
+            os.makedirs(hd, exist_ok=True)
+            # 验证目录是否真的可写
+            test_file = os.path.join(md, ".write_test")
+            with open(test_file, "w") as f:
+                f.write("test")
+            os.remove(test_file)
 
-    # 3. 设置机器级环境变量（尽量设，失败不阻塞）
+            models_dir = md
+            home_dir = hd
+            write_log(f"模型目录: {md} (D盘)")
+            break
+        except OSError as e:
+            write_log(f"D盘不可用: {e}，尝试其他路径")
+            continue
+
+    # 兜底：使用用户目录（确保路径无中文）
+    if models_dir is None:
+        user_home = os.environ.get("USERPROFILE", os.path.expanduser("~"))
+        # 检查用户名是否包含中文
+        username = os.path.basename(user_home)
+        has_chinese = any('\u4e00' <= c <= '\u9fff' for c in username)
+
+        if has_chinese:
+            # 中文用户名，使用 C 盘根目录下的无中文路径
+            write_log("检测到中文用户名，使用 C 盘无中文路径")
+            models_dir = r"C:\ollama_models"
+            home_dir = r"C:\ollama_data"
+        else:
+            models_dir = os.path.join(user_home, ".ollama", "models")
+            home_dir = os.path.join(user_home, ".ollama")
+
+        try:
+            os.makedirs(models_dir, exist_ok=True)
+            os.makedirs(home_dir, exist_ok=True)
+            # 验证目录是否真的可写
+            test_file = os.path.join(models_dir, ".write_test")
+            with open(test_file, "w") as f:
+                f.write("test")
+            os.remove(test_file)
+            write_log(f"模型目录: {models_dir} (用户目录)")
+        except OSError as e:
+            write_log(f"警告: 无法创建模型目录: {e}")
+            # 最后兜底：使用临时目录
+            models_dir = os.path.join(os.environ.get("TEMP", r"C:\Windows\Temp"), "ollama_models")
+            home_dir = os.path.join(os.environ.get("TEMP", r"C:\Windows\Temp"), "ollama_data")
+            os.makedirs(models_dir, exist_ok=True)
+            os.makedirs(home_dir, exist_ok=True)
+            write_log(f"模型目录: {models_dir} (临时目录)")
+
+    # 检查 Ollama 是否已在运行，在运行则跳过重启
+    already_running = False
     try:
-        subprocess.run(["setx", "OLLAMA_MODELS", models_dir, "/M"],
-                       capture_output=True, timeout=10)
-        subprocess.run(["setx", "OLLAMA_HOME", home_dir, "/M"],
-                       capture_output=True, timeout=10)
-        write_log(f"已设置机器级环境变量: OLLAMA_MODELS={models_dir}, OLLAMA_HOME={home_dir}")
+        r = subprocess.run(["ollama", "list"], capture_output=True, timeout=5)
+        if r.returncode == 0:
+            already_running = True
+            write_log("Ollama 已在运行，跳过重启")
     except Exception:
         pass
 
-    # 4. 尝试通过 Windows 服务启动
-    write_log("正在启动 Ollama 服务...")
-    sr = subprocess.run(["sc", "start", "ollama"], capture_output=True, timeout=15)
-    if sr.returncode == 0:
-        write_log("Ollama Windows 服务已启动")
-    else:
-        write_log(f"Windows 服务不可用（退出码 {sr.returncode}），改用后台进程启动")
-        # 通过 PowerShell Start-Process 启动，完全独立，零句柄继承，无黑窗
+    if not already_running:
+        # 1. 停止所有 ollama 进程
+        write_log("正在停止 Ollama 进程...")
+        subprocess.run(["sc", "stop", "ollama"], capture_output=True)
+        subprocess.run(["taskkill", "/f", "/im", "ollama.exe"], capture_output=True)
+        subprocess.run(["taskkill", "/f", "/im", "ollama app.exe"], capture_output=True)
+        time.sleep(3)
+
+        # 2. 设置当前进程环境变量
+        os.environ["OLLAMA_MODELS"] = models_dir
+        os.environ["OLLAMA_HOME"] = home_dir
+
+        # 3. 先设置机器级环境变量（必须在启动服务之前，否则服务读不到）
+        try:
+            subprocess.run(["setx", "OLLAMA_MODELS", models_dir, "/M"],
+                           capture_output=True, timeout=10)
+            subprocess.run(["setx", "OLLAMA_HOME", home_dir, "/M"],
+                           capture_output=True, timeout=10)
+            write_log(f"已设置机器级环境变量: OLLAMA_MODELS={models_dir}, OLLAMA_HOME={home_dir}")
+        except Exception:
+            pass
+
+        # 4. 优先用 PowerShell 显式传环境变量启动（比 sc start 更可靠）
+        #    sc start 以 SYSTEM 账户运行，可能读不到刚设的机器级环境变量
+        write_log("正在启动 Ollama 服务...")
         try:
             ps_cmd = (
                 f'$env:OLLAMA_MODELS="{models_dir}"; '
@@ -552,25 +703,35 @@ def ensure_ollama_paths():
                 ["powershell", "-NoProfile", "-Command", ps_cmd],
                 capture_output=True, timeout=10,
             )
-            write_log("ollama serve 已通过 PowerShell 后台启动（独立进程，无句柄继承）")
+            write_log("ollama serve 已通过 PowerShell 后台启动（显式环境变量）")
         except Exception as e:
-            write_log(f"ollama serve 启动失败: {e}")
+            write_log(f"PowerShell 启动失败: {e}，尝试 sc start 兜底")
+            sr = subprocess.run(["sc", "start", "ollama"], capture_output=True, timeout=15)
+            if sr.returncode == 0:
+                write_log("Ollama Windows 服务已启动（sc start 兜底）")
+            else:
+                write_log(f"sc start 也失败（退出码 {sr.returncode}），Ollama 可能未启动")
 
-    # 5. 等待服务就绪（最多 15 秒）
-    for i in range(15):
-        time.sleep(1)
-        try:
-            r = subprocess.run(["ollama", "list"], capture_output=True, timeout=5)
-            if r.returncode == 0:
-                write_log("Ollama 服务已就绪（D 盘模型目录，无中文路径）")
-                return True
-        except subprocess.TimeoutExpired:
-            pass
-        except Exception:
-            pass
+        # 5. 等待服务就绪（最多 30 秒，给模型加载留足时间）
+        for i in range(30):
+            time.sleep(1)
+            try:
+                r = subprocess.run(["ollama", "list"], capture_output=True, timeout=5)
+                if r.returncode == 0:
+                    write_log("Ollama 服务已就绪")
+                    return True
+            except subprocess.TimeoutExpired:
+                pass
+            except Exception:
+                pass
 
-    write_log("警告: Ollama 服务启动超时，继续尝试部署...")
-    return False
+        write_log("警告: Ollama 服务启动超时，继续尝试部署...")
+        return False
+    else:
+        # 已在运行，只更新环境变量
+        os.environ["OLLAMA_MODELS"] = models_dir
+        os.environ["OLLAMA_HOME"] = home_dir
+        return True
 
 
 def main():
@@ -585,6 +746,14 @@ def main():
         # （旧顺序 check_and_update_ollama 先 sc start，ensure_ollama_paths 又 sc stop，冲突）
         ensure_ollama_paths()
         check_and_update_ollama()
+
+        # 检测模型是否已存在，避免重复下载
+        if check_model_exists():
+            write_log("模型已就绪，跳过下载步骤")
+            write_log("模型部署完成，接下来将进行 Continue 配置。")
+            return 0
+
+        write_log("模型未就绪，开始下载...")
         model_path = download_model()
         create_ollama_model(model_path)
         ok = verify_model()

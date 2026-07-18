@@ -84,15 +84,14 @@ FLASHTAP_ORIGINAL_PROFILE=$env:FLASHTAP_ORIGINAL_PROFILE
     $envContent | Out-File -FilePath $envFile -Encoding UTF8 -Force
     Write-Log "[调试] 写入环境文件: $envFile" 'DarkGray'
 
-    # 使用 Start-Process 捕获退出码（比 $LASTEXITCODE 更可靠）
-    # -NoNewWindow 保证日志输出到当前终端，不弹新窗口
+    # 直接 & 调用子脚本（同窗口输出，不弹新窗口）
+    # $LASTEXITCODE 捕获退出码，加 $null 检测防止未赋值
     $extraArgs = if ($ArgumentList.Count -gt 0) { ' ' + ($ArgumentList -join ' ') } else { '' }
     $ec = 0
     try {
-        $proc = Start-Process -FilePath powershell.exe `
-            -ArgumentList "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$FilePath`"$extraArgs" `
-            -Wait -NoNewWindow -PassThru
-        if ($proc) { $ec = $proc.ExitCode } else { $ec = 1 }
+        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$FilePath" $extraArgs
+        $ec = $LASTEXITCODE
+        if ($null -eq $ec) { $ec = 0 }
     } catch {
         $ec = 1
         Write-Log "[错误] 执行子脚本异常: $($_.Exception.Message)" 'Red'
@@ -948,12 +947,6 @@ int main() {
                         $langExtract = Join-Path $env:TEMP 'vscode-lang-ext'
 
                         Write-Log '  [信息] 正在下载中文语言包...' 'Cyan'
-                        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
-# 自动继承系统代理设置
-$proxy = [System.Net.WebRequest]::GetSystemWebProxy()
-$proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
-[System.Net.WebRequest]::DefaultWebProxy = $proxy
                         Invoke-WebRequest -Uri 'https://marketplace.visualstudio.com/_apis/public/gallery/publishers/MS-CEINTL/vsextensions/vscode-language-pack-zh-hans/latest/vspackage' -OutFile $langVsix -UseBasicParsing
 
                         # VSIX 本质是 ZIP，直接解压
@@ -999,6 +992,10 @@ $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
             Write-Log "[信息] 关闭目标用户 [$targetUserForKill] 的 VS Code 进程以应用新配置..." 'Cyan'
             & taskkill /F /FI "USERNAME eq $targetUserForKill" /IM Code.exe 2>&1 | Out-Null
             Start-Sleep 3
+        }
+        # 兜底：如果 $vscArgs 未定义（WSL 分支未执行），使用默认参数
+        if (-not $vscArgs) {
+            $vscArgs = @('--locale=zh-cn')
         }
         # 不用 -NoNewWindow，让 VS Code 在独立窗口启动，避免其 stdout 混入安装终端
         Start-Process -FilePath $vscExe -ArgumentList $vscArgs

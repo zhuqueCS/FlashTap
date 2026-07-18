@@ -414,40 +414,71 @@ function Configure-Ollama {
     # 模型目录
 
     # 智能选择模型目录：D盘可用则用D盘，否则用用户目录
+    # 增加驱动器存在性检查、中文用户名检测、多重兜底机制（与 download-models.py 保持一致）
     $modelsDir = $null
-    $preferredDirs = @(
-        'D:\ollama_models',
-        [System.IO.Path]::Combine($env:USERPROFILE, '.ollama\models'),
-        [System.IO.Path]::Combine($env:LOCALAPPDATA, 'ollama\models')
-    )
-    foreach ($dir in $preferredDirs) {
+
+    # 优先尝试 D 盘（虚拟机可能没有 D 盘）
+    $dDrivePath = 'D:\ollama_models'
+    if (Test-Path 'D:\') {
         try {
-            $parent = Split-Path -Parent $dir
-            if (Test-Path -LiteralPath $parent) {
-                $modelsDir = $dir
-                break
-            }
-        } catch {}
+            $null = New-Item -ItemType Directory -Path $dDrivePath -Force -ErrorAction Stop
+            # 验证目录是否真的可写
+            $testFile = Join-Path $dDrivePath '.write_test'
+            Set-Content -Path $testFile -Value 'test' -ErrorAction Stop
+            Remove-Item -Path $testFile -Force -ErrorAction SilentlyContinue
+            $modelsDir = $dDrivePath
+            Write-Log "  [成功] 模型目录已创建: $dDrivePath (D盘)"
+        } catch {
+            Write-Log "  [信息] D盘不可用或无法写入: $($_.Exception.Message)"
+        }
+    } else {
+        Write-Log '  [信息] D盘驱动器不存在，跳过'
     }
+
+    # 兜底：使用用户目录（确保路径无中文）
     if (-not $modelsDir) {
-        $modelsDir = [System.IO.Path]::Combine($env:USERPROFILE, '.ollama\models')
+        $userModelsPath = [System.IO.Path]::Combine($env:USERPROFILE, '.ollama\models')
+        # 检查用户名是否包含中文
+        $username = Split-Path -Leaf $env:USERPROFILE
+        $hasChinese = $username -match '[\u4e00-\u9fff]'
+
+        if ($hasChinese) {
+            # 中文用户名，使用 C 盘根目录下的无中文路径
+            Write-Log '  [信息] 检测到中文用户名，使用 C 盘无中文路径'
+            $modelsDir = 'C:\ollama_models'
+        } else {
+            $modelsDir = $userModelsPath
+        }
+
+        try {
+            $null = New-Item -ItemType Directory -Path $modelsDir -Force -ErrorAction Stop
+            # 验证目录是否真的可写
+            $testFile = Join-Path $modelsDir '.write_test'
+            Set-Content -Path $testFile -Value 'test' -ErrorAction Stop
+            Remove-Item -Path $testFile -Force -ErrorAction SilentlyContinue
+            Write-Log "  [成功] 模型目录已创建: $modelsDir"
+        } catch {
+            # 最后兜底：使用临时目录
+            Write-Log "  [警告] 无法创建默认模型目录: $($_.Exception.Message)"
+            $tempPath = [System.IO.Path]::Combine($env:TEMP, 'ollama_models')
+            try {
+                $null = New-Item -ItemType Directory -Path $tempPath -Force -ErrorAction Stop
+                $modelsDir = $tempPath
+                Write-Log "  [成功] 使用临时目录: $tempPath"
+            } catch {
+                Write-Log "  [错误] 无法创建任何模型目录，Ollama 将使用默认路径"
+            }
+        }
     }
 
     Write-Log "  [信息] 模型目录: $modelsDir"
 
     try {
-        if (-not (Test-Path -LiteralPath $modelsDir)) {
-            New-Item -ItemType Directory -Path $modelsDir -Force -ErrorAction Stop | Out-Null
-            Write-Log '  [成功] 模型目录已创建'
-        }
-        else {
-            Write-Log '  [信息] 模型目录已存在'
-        }
         [Environment]::SetEnvironmentVariable('OLLAMA_MODELS', $modelsDir, $envTarget)
         Write-Log "  [成功] OLLAMA_MODELS = $modelsDir"
     }
     catch {
-        Write-Log "  [警告] 无法创建模型目录: $($_.Exception.Message)"
+        Write-Log "  [警告] 无法设置 OLLAMA_MODELS: $($_.Exception.Message)"
         Write-Log "  [警告] Ollama 将使用默认模型目录" 'Yellow'
     }
 }
