@@ -48,6 +48,9 @@ echo [INFO] Target user: %FLASHTAP_ORIGINAL_USER%
 echo [INFO] Launching main installer...
 echo.
 
+rem 切换到脚本目录（提权后工作目录可能是 System32，必须切回来）
+cd /d "%~dp0"
+
 powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Setup-FlashTap.ps1" -OriginalUsername "%FLASHTAP_ORIGINAL_USER%" -OriginalUserProfile "%FLASHTAP_ORIGINAL_PROFILE%"
 
 echo.
