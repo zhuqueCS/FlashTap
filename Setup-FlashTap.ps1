@@ -84,25 +84,22 @@ FLASHTAP_ORIGINAL_PROFILE=$env:FLASHTAP_ORIGINAL_PROFILE
     $envContent | Out-File -FilePath $envFile -Encoding UTF8 -Force
     Write-Log "[调试] 写入环境文件: $envFile" 'DarkGray'
 
-    # 用 & 直接调用（同窗口，日志直接输出到当前终端）
-    # 用数组传参数避免路径空格断裂
-    # $LASTEXITCODE 在外部 exe 调用后自动设置，调用前重置确保干净
-    $psArgs = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $FilePath)
+    # 用 cmd /c 调用 powershell.exe（最可靠：stdout 输出到终端，退出码通过 %errorlevel% 传递）
+    $cmdLine = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$FilePath`""
     if ($ArgumentList.Count -gt 0) {
-        $psArgs += $ArgumentList
+        foreach ($a in $ArgumentList) {
+            $cmdLine += " `"$a`""
+        }
     }
 
     $ec = 1  # 默认失败
     try {
-        # 重置 $LASTEXITCODE，确保拿到的是本次调用的退出码
         $global:LASTEXITCODE = $null
-        & 'powershell.exe' @psArgs
-        if ($global:LASTEXITCODE -ne $null) {
-            $ec = [int]$global:LASTEXITCODE
-        } else {
-            # $LASTEXITCODE 为 null 通常说明进程正常结束但没设退出码（罕见），视为成功
-            $ec = 0
-            Write-Log '[调试] $LASTEXITCODE 为 null，视为成功' 'DarkGray'
+        & cmd /c $cmdLine
+        $ec = $LASTEXITCODE
+        if ($null -eq $ec) {
+            $ec = 1
+            Write-Log '[警告] 子进程未返回退出码（可能崩溃或语法错误）' 'Yellow'
         }
     } catch {
         $ec = 1

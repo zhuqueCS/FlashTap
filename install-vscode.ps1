@@ -9,15 +9,36 @@ $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'Continue'
 
 # 获取脚本所在目录（必须最先执行，后续依赖 PROJECT_DIR）
+# 通过 cmd /c 调用时 $MyInvocation.MyCommand.Path 可能为空，需要多个兜底
 $PROJECT_DIR = $null
 try {
-    if ($MyInvocation -ne $null -and $MyInvocation.MyCommand -ne $null -and $MyInvocation.MyCommand.Path -ne $null) {
-        $PROJECT_DIR = [System.IO.Path]::GetDirectoryName($MyInvocation.MyCommand.Path)
+    # 方式1：$PSCommandPath（PowerShell 3.0+，最可靠）
+    if ($PSCommandPath) {
+        $PROJECT_DIR = [System.IO.Path]::GetDirectoryName($PSCommandPath)
     }
 }
 catch {}
 if ($PROJECT_DIR -eq $null -or $PROJECT_DIR -eq "") {
     try {
+        # 方式2：$MyInvocation.MyCommand.Path
+        if ($MyInvocation -ne $null -and $MyInvocation.MyCommand -ne $null -and $MyInvocation.MyCommand.Path -ne $null) {
+            $PROJECT_DIR = [System.IO.Path]::GetDirectoryName($MyInvocation.MyCommand.Path)
+        }
+    }
+    catch {}
+}
+if ($PROJECT_DIR -eq $null -or $PROJECT_DIR -eq "") {
+    try {
+        # 方式3：$script:MyInvocation
+        if ($script:MyInvocation -ne $null -and $script:MyInvocation.MyCommand -ne $null -and $script:MyInvocation.MyCommand.Path -ne $null) {
+            $PROJECT_DIR = [System.IO.Path]::GetDirectoryName($script:MyInvocation.MyCommand.Path)
+        }
+    }
+    catch {}
+}
+if ($PROJECT_DIR -eq $null -or $PROJECT_DIR -eq "") {
+    try {
+        # 方式4：当前工作目录兜底
         if ($PWD -ne $null -and $PWD.Path -ne $null) {
             $PROJECT_DIR = $PWD.Path
         }
