@@ -640,19 +640,36 @@ def main():
     write_log("=" * 50)
     write_log("模型部署开始")
     write_log("=" * 50)
+    main_start = time.time()
 
     try:
+        write_log("[步骤 1/6] 创建模型目录...")
         MODELS_DIR.mkdir(exist_ok=True)
+        write_log(f"  模型目录: {MODELS_DIR}")
+
+        write_log("[步骤 2/6] 安装 Python 依赖...")
         install_deps()
-        # 先确保 Ollama 路径/服务就绪，再做版本检查
-        # （旧顺序 check_and_update_ollama 先 sc start，ensure_ollama_paths 又 sc stop，冲突）
+
+        write_log("[步骤 3/6] 确保 Ollama 路径和服务就绪...")
         ensure_ollama_paths()
+
+        write_log("[步骤 4/6] 检查 Ollama 版本...")
         check_and_update_ollama()
+
+        write_log("[步骤 5/6] 下载 Qwen2.5-Coder-7B 模型（约 4.7GB）...")
+        write_log("  下载源: 阿里魔搭（ModelScope），国内速度快")
+        write_log("  支持断点续传，中断后重新运行即可继续")
         model_path = download_model()
+
+        write_log("[步骤 6/6] 导入模型到 Ollama + 验证...")
         create_ollama_model(model_path)
         ok = verify_model()
+
+        elapsed = int(time.time() - main_start)
+        write_log(f"========== 模型部署完成（总耗时 {elapsed} 秒）==========")
+
         if ok:
-            write_log("模型部署完成，接下来将进行 Continue 配置。")
+            write_log("模型部署成功，接下来将进行 Continue 配置。")
         else:
             write_log("模型部署未完成，Continue 可能无法使用，但安装流程继续")
         return 0 if ok else 1

@@ -232,7 +232,9 @@ function Get-Ollama-Local-Installer {
     # 本地没有，从网络下载
     Write-Log '  [信息] 同目录未找到 OllamaSetup.exe'
     if ($OLLAMA_DOWNLOAD_URL -and ($OLLAMA_DOWNLOAD_URL -notmatch 'USER/REPO')) {
-        Write-Log '  [信息] 正在自动下载 OllamaSetup.exe（约 1.4GB）...'
+        $urlCount = (@($OLLAMA_DOWNLOAD_MIRRORS) + @($OLLAMA_DOWNLOAD_URL)).Count
+        Write-Log "  [信息] 将尝试 ${urlCount} 个镜像源下载 OllamaSetup.exe（约 1.4GB）"
+        Write-Log '  [信息] 下载可能需要 5-30 分钟，取决于网络速度'
 
         $downloadOk = $false
         $urls = @($OLLAMA_DOWNLOAD_MIRRORS) + @($OLLAMA_DOWNLOAD_URL)
@@ -313,48 +315,63 @@ function Install-Ollama-From-Exe {
         throw '安装程序文件不存在或损坏'
     }
 
-    Write-Log '  [信息] 正在静默安装 Ollama...'
+    $installerSize = [math]::Round((Get-Item $InstallerPath).Length / 1MB, 0)
+    Write-Log "  [信息] 安装包大小: ${installerSize}MB"
+    Write-Log '  [步骤 1/4] 正在关闭已有 Ollama 进程...'
     Kill-AllOllama
+    Start-Sleep -Seconds 2
+    Write-Log '  [步骤 1/4] 进程清理完成'
 
+    Write-Log '  [步骤 2/4] 正在启动 Ollama 静默安装器...'
     $installStart = Get-Date
 
     $installProcess = Start-Process -FilePath $InstallerPath -ArgumentList '/verysilent /norestart /suppressmsgboxes' -PassThru
     if (-not $installProcess) {
         throw '无法启动Ollama安装程序，请检查安装包是否完整'
     }
+    Write-Log "  [步骤 2/4] 安装器已启动（PID: $($installProcess.Id)）"
 
-    # 等待安装完成
+    # 等待安装完成（带进度提示）
+    Write-Log '  [步骤 3/4] 正在安装，请耐心等待（通常 1-3 分钟）...'
     $maxWaitSeconds = 300
     $waited = 0
+    $lastProgress = 0
     while ($waited -lt $maxWaitSeconds) {
         if ($installProcess.HasExited) { break }
         Start-Sleep -Seconds 2
         $waited += 2
+        # 每 10 秒打印一次进度
+        if ($waited - $lastProgress -ge 10) {
+            $lastProgress = $waited
+            $remainSec = $maxWaitSeconds - $waited
+            Write-Log "  [步骤 3/4] 安装中... 已等待 ${waited}秒（最长等待 ${maxWaitSeconds}秒，剩余 ${remainSec}秒）" 'DarkGray'
+        }
     }
 
     if (-not $installProcess.HasExited) {
-        Write-Log "  [警告] 安装程序 ${maxWaitSeconds}秒 后仍未退出，强制终止 (PID: $($installProcess.Id))..."
+        Write-Log "  [警告] 安装程序 ${maxWaitSeconds}秒 后仍未退出，强制终止 (PID: $($installProcess.Id))..." 'Yellow'
         Kill-AllOllama -Process $installProcess
     }
 
     # 安装完成后彻底杀掉所有 Ollama 进程（包括自动启动的 GUI 托盘程序）
+    Write-Log '  [步骤 3/4] 安装器已退出，清理残留进程...'
     Kill-AllOllama -Process $installProcess
     Start-Sleep -Seconds 2
     Kill-AllOllama
 
     $elapsed = [math]::Round(((Get-Date) - $installStart).TotalSeconds, 0)
     $exitCode = $installProcess.ExitCode
-    Write-Log "  [信息] 安装程序退出，耗时 ${elapsed}秒，退出码: $exitCode"
+    Write-Log "  [步骤 3/4] 安装完成，耗时 ${elapsed}秒，退出码: $exitCode"
 
     if ($elapsed -lt 5) {
-        Write-Log "  [警告] 安装程序退出过快（${elapsed}秒），可能安装失败" -Color 'Yellow'
+        Write-Log "  [警告] 安装程序退出过快（${elapsed}秒），可能安装失败" 'Yellow'
     }
 
     if ($exitCode -ne 0) {
-        Write-Log "  [错误] 安装程序返回非零退出码: $exitCode" -Color 'Red'
+        Write-Log "  [错误] 安装程序返回非零退出码: $exitCode" 'Red'
     }
 
-    Write-Log '  [信息] 正在验证安装...'
+    Write-Log '  [步骤 4/4] 正在验证安装结果...'
 
     # 验证安装
     $checkPaths = @(
@@ -365,7 +382,7 @@ function Install-Ollama-From-Exe {
 
     foreach ($cp in $checkPaths) {
         if (Test-Path -LiteralPath $cp) {
-            Write-Log ("  [成功] 找到: $cp")
+            Write-Log "  [步骤 4/4] 验证通过: $cp" 'Green'
             return
         }
     }
@@ -374,7 +391,7 @@ function Install-Ollama-From-Exe {
     try {
         $found = Get-Command ollama.exe -ErrorAction SilentlyContinue
         if ($found) {
-            Write-Log ("  [成功] 在PATH中找到: $($found.Source)")
+            Write-Log ("  [步骤 4/4] 验证通过（PATH）: $($found.Source)")
             return
         }
     }
@@ -385,9 +402,12 @@ function Install-Ollama-From-Exe {
 
 # ── 安装Ollama（总控） ──
 function Install-Ollama {
+    Write-Log '  [阶段 1/4] 环境诊断...'
 
     # 先跑环境诊断
     Write-Diagnostic
+
+    Write-Log '  [阶段 2/4] 检测已有 Ollama 安装...'
 
     # 纯存在性检测：只认当前用户目录下的 Ollama，不认其他用户的
     # 空白账户隔离模式下，连系统级 Ollama 都不认（强制为当前账户装用户级副本）
@@ -441,11 +461,13 @@ function Install-Ollama {
     }
     catch { }
 
-    Write-Log '[信息] 开始安装 Ollama...'
+    Write-Log '  [阶段 3/4] 获取 Ollama 安装包...'
+    Write-Log '  [信息] 开始安装 Ollama...'
 
     # 本地安装程序检测（同目录优先 → 抛错退出）
     $installerPath = Get-Ollama-Local-Installer
 
+    Write-Log '  [阶段 4/4] 执行静默安装...'
     # 安装
     Install-Ollama-From-Exe -InstallerPath $installerPath
 
@@ -663,27 +685,39 @@ function Start-Ollama {
 function Main {
     [Console]::TreatControlCAsInput = $false
     $env:OLLAMA_HOST = '127.0.0.1:11434'
+    $mainStart = Get-Date
 
+    Write-Log '========== Ollama 安装流程开始 =========='
+
+    # ── 步骤 A：安装 Ollama ──
+    Write-Log '[步骤 A/3] 安装 Ollama 引擎...'
     try {
         Install-Ollama
+        Write-Log '[步骤 A/3] Ollama 安装完成 ✓'
     }
     catch {
-        Write-Log ('[错误] ' + $_.Exception.Message)
+        Write-Log ('[步骤 A/3] Ollama 安装失败: ' + $_.Exception.Message) 'Red'
         Write-Host ''
         Write-Host '  *** 如需反馈此错误，请复制上方包含[错误]的那一行 ***'
         Write-Host ''
         exit 1
     }
 
+    # ── 步骤 B：配置环境变量 + 模型目录 ──
+    Write-Log '[步骤 B/3] 配置 Ollama 环境变量...'
     try {
         Configure-Ollama
+        Write-Log '[步骤 B/3] 环境配置完成 ✓'
     }
     catch {
-        Write-Log ('[警告] ' + $_.Exception.Message)
+        Write-Log ('[步骤 B/3] 环境配置失败: ' + $_.Exception.Message) 'Yellow'
     }
 
+    # ── 步骤 C：启动 Ollama 服务 ──
+    Write-Log '[步骤 C/3] 启动 Ollama 服务...'
     try {
         Start-Ollama
+        Write-Log '[步骤 C/3] 服务启动完成 ✓'
     }
     catch {
         Write-Log ('[警告] ' + $_.Exception.Message)
