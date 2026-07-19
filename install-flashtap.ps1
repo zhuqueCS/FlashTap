@@ -772,5 +772,18 @@ function Main {
     Write-Host '  [成功] Ollama 安装完成，继续后续步骤...' -ForegroundColor Green
 }
 
-Main
+try {
+    Main
+} catch {
+    Write-Host ''
+    Write-Host '  ════════════════════════════════════════════' -ForegroundColor Red
+    Write-Host '    [严重错误] install-flashtap.ps1 发生异常' -ForegroundColor Red
+    Write-Host '  ════════════════════════════════════════════' -ForegroundColor Red
+    Write-Host "  错误信息: $($_.Exception.Message)" -ForegroundColor Yellow
+    Write-Host "  错误位置: $($_.InvocationInfo.PositionMessage)" -ForegroundColor Yellow
+    Write-Host "  脚本行号: $($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor Yellow
+    Write-Host "  堆栈: $($_.ScriptStackTrace)" -ForegroundColor DarkGray
+    Write-Host ''
+    exit 1
+}
 exit 0
