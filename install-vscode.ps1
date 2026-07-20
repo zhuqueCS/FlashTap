@@ -539,17 +539,60 @@ function Install-All-Extensions {
         }
     }
 
-    # 预检：code CLI 是否可用
+    Write-Log "[信息] CLI 路径: $cliCmd"
+
+    # ── VS Code warmup：首次安装后 CLI 可能未就绪，先启动一次让 VS Code 完成内部初始化 ──
+    $warmupNeeded = $false
     try {
         $codeVer = & $cliCmd --version 2>&1
         if ($LASTEXITCODE -ne 0) {
-            Write-Log "[警告] code CLI 不可用，扩展安装将跳过: $codeVer" 'WARNING'
+            Write-Log "[信息] code CLI 首次调用未就绪（退出码 $LASTEXITCODE），执行 warmup..." 'WARNING'
+            $warmupNeeded = $true
+        } else {
+            Write-Log "[信息] code CLI 就绪: $($codeVer[0])" 'INFO'
+        }
+    } catch {
+        Write-Log "[信息] code CLI 首次调用异常: $($_.Exception.Message)，执行 warmup..." 'WARNING'
+        $warmupNeeded = $true
+    }
+
+    if ($warmupNeeded) {
+        Write-Log '[信息] 正在启动 VS Code 进行内部初始化（3 秒后自动关闭）...' 'Cyan'
+        try {
+            $warmupProc = Start-Process -FilePath $cliCmd -ArgumentList '--version' -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+            if ($warmupProc) {
+                $warmupDone = $warmupProc.WaitForExit(15000)
+                if (-not $warmupDone) {
+                    Write-Log '[信息] warmup 超时，终止进程' 'Yellow'
+                    $warmupProc.Kill()
+                }
+            }
+        } catch {
+            Write-Log "[信息] warmup 进程启动失败: $($_.Exception.Message)" 'Yellow'
+        }
+
+        Start-Sleep -Seconds 2
+
+        # 关闭可能弹出的 VS Code 窗口
+        $codeProcs = @(Get-Process -Name 'Code' -ErrorAction SilentlyContinue)
+        if ($codeProcs.Count -gt 0) {
+            Write-Log "[信息] 关闭 warmup 打开的 VS Code 窗口..." 'Cyan'
+            & taskkill /F /IM Code.exe 2>&1 | Out-Null
+            Start-Sleep -Seconds 2
+        }
+
+        # 再次验证 CLI
+        try {
+            $codeVer = & $cliCmd --version 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "[警告] code CLI warmup 后仍不可用（退出码 $LASTEXITCODE），扩展安装将跳过" 'WARNING'
+                return $false
+            }
+            Write-Log "[信息] code CLI warmup 成功: $($codeVer[0])" 'INFO'
+        } catch {
+            Write-Log "[警告] code CLI warmup 后仍失败: $($_.Exception.Message)，扩展安装将跳过" 'WARNING'
             return $false
         }
-        Write-Log "[信息] code CLI 就绪: $($codeVer[0])" 'INFO'
-    } catch {
-        Write-Log "[警告] code CLI 调用失败，扩展安装将跳过: $($_.Exception.Message)" 'WARNING'
-        return $false
     }
 
     $extRoot = [System.IO.Path]::Combine($env:USERPROFILE, '.vscode', 'extensions')
@@ -611,31 +654,56 @@ function Copy-SettingsJson {
 
     $srcPath = [System.IO.Path]::Combine($PROJECT_DIR, 'settings.json')
     if (-not (Test-Path -LiteralPath $srcPath)) {
-        throw "找不到源 settings.json: $srcPath"
+        Write-Log "[警告] 找不到源 settings.json: $srcPath，跳过" 'WARNING'
+        return $false
     }
 
     # VS Code 用户配置目录：%APPDATA%\Code\User\settings.json
     $targetDir = [System.IO.Path]::Combine($env:APPDATA, 'Code', 'User')
     $targetPath = [System.IO.Path]::Combine($targetDir, 'settings.json')
 
-    # 创建目录
-    if (-not (Test-Path $targetDir)) {
-        New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
-        Write-Log "[信息] 已创建目录: $targetDir"
+    # 创建目录（带权限修复）
+    try {
+        if (-not (Test-Path $targetDir)) {
+            New-Item -ItemType Directory -Path $targetDir -Force -ErrorAction Stop | Out-Null
+            Write-Log "[信息] 已创建目录: $targetDir"
+        }
+    } catch {
+        Write-Log "[警告] 创建目录失败: $($_.Exception.Message)，尝试 icacls 修复权限..." 'Yellow'
+        try {
+            $parentDir = [System.IO.Path]::Combine($env:APPDATA, 'Code')
+            if (-not (Test-Path $parentDir)) {
+                New-Item -ItemType Directory -Path $parentDir -Force | Out-Null
+            }
+            & icacls "`"$parentDir`"" /grant "`"$($env:USERNAME):(OI)(CI)F`"" /T 2>&1 | Out-Null
+            New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+            Write-Log "[信息] 权限修复后目录创建成功: $targetDir"
+        } catch {
+            Write-Log "[错误] 目录创建彻底失败: $($_.Exception.Message)，跳过 settings.json" 'ERROR'
+            return $false
+        }
     }
 
     # 备份已有配置
-    if (Test-Path -LiteralPath $targetPath) {
-        $backup = "$targetPath.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-        Copy-Item -LiteralPath $targetPath -Destination $backup -Force -ErrorAction Stop
-        Write-Log "[信息] 已备份现有配置到: $backup"
+    try {
+        if (Test-Path -LiteralPath $targetPath) {
+            $backup = "$targetPath.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+            Copy-Item -LiteralPath $targetPath -Destination $backup -Force -ErrorAction SilentlyContinue
+            Write-Log "[信息] 已备份现有配置到: $backup"
+        }
+    } catch {
+        Write-Log "[信息] 备份旧配置失败（不影响后续）: $($_.Exception.Message)" 'Yellow'
     }
 
-    # 纯搬运：直接复制，不修改任何字节
-    Copy-Item -LiteralPath $srcPath -Destination $targetPath -Force -ErrorAction Stop
-    Write-Log "[成功] settings.json 已复制到: $targetPath" 'INFO'
-
-    return $true
+    # 复制
+    try {
+        Copy-Item -LiteralPath $srcPath -Destination $targetPath -Force -ErrorAction Stop
+        Write-Log "[成功] settings.json 已复制到: $targetPath" 'INFO'
+        return $true
+    } catch {
+        Write-Log "[错误] settings.json 复制失败: $($_.Exception.Message)" 'ERROR'
+        return $false
+    }
 }
 
 # 2b. 写入 locale.json，确保中文语言包安装后 VS Code 首次启动就是中文界面
@@ -664,9 +732,21 @@ function Copy-ContinueConfig {
 
     $continueDir = [System.IO.Path]::Combine($env:USERPROFILE, '.continue')
 
-    if (-not (Test-Path $continueDir)) {
-        New-Item -ItemType Directory -Path $continueDir -Force | Out-Null
-        Write-Log "[信息] 已创建 Continue 目录: $continueDir"
+    try {
+        if (-not (Test-Path $continueDir)) {
+            New-Item -ItemType Directory -Path $continueDir -Force -ErrorAction Stop | Out-Null
+            Write-Log "[信息] 已创建 Continue 目录: $continueDir"
+        }
+    } catch {
+        Write-Log "[警告] 创建 Continue 目录失败: $($_.Exception.Message)，尝试 icacls 修复..." 'Yellow'
+        try {
+            & icacls "`"$continueDir`"" /grant "`"$($env:USERNAME):(OI)(CI)F`"" /T 2>&1 | Out-Null
+            New-Item -ItemType Directory -Path $continueDir -Force | Out-Null
+            Write-Log "[信息] 权限修复后目录创建成功: $continueDir"
+        } catch {
+            Write-Log "[错误] Continue 目录创建彻底失败: $($_.Exception.Message)" 'ERROR'
+            return $false
+        }
     }
 
     $allOk = $true
@@ -682,15 +762,24 @@ function Copy-ContinueConfig {
         }
 
         # 备份已有配置
-        if (Test-Path -LiteralPath $targetPath) {
-            $backup = "$targetPath.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-            Copy-Item -LiteralPath $targetPath -Destination $backup -Force -ErrorAction Stop
-            Write-Log "  [信息] 已备份 $cfgName 到: $backup"
+        try {
+            if (Test-Path -LiteralPath $targetPath) {
+                $backup = "$targetPath.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+                Copy-Item -LiteralPath $targetPath -Destination $backup -Force -ErrorAction SilentlyContinue
+                Write-Log "  [信息] 已备份 $cfgName 到: $backup"
+            }
+        } catch {
+            Write-Log "  [信息] 备份 $cfgName 失败（不影响后续）: $($_.Exception.Message)" 'Yellow'
         }
 
         # 复制
-        Copy-Item -LiteralPath $srcPath -Destination $targetPath -Force -ErrorAction Stop
-        Write-Log "  [成功] $cfgName 已复制到: $targetPath"
+        try {
+            Copy-Item -LiteralPath $srcPath -Destination $targetPath -Force -ErrorAction Stop
+            Write-Log "  [成功] $cfgName 已复制到: $targetPath"
+        } catch {
+            Write-Log "  [错误] $cfgName 复制失败: $($_.Exception.Message)" 'ERROR'
+            $allOk = $false
+        }
     }
 
     return $allOk
@@ -704,7 +793,8 @@ function Main {
 
     # 验证返回的路径真实存在（防止返回无效路径导致后续扩展安装失败）
     if (-not $codeCmd -or -not (Test-Path -LiteralPath $codeCmd)) {
-        throw "VS Code 安装后路径无效或不存在: $codeCmd"
+        Write-Log "[错误] VS Code 安装后路径无效或不存在: $codeCmd" 'ERROR'
+        return @{ CodeCmd = $codeCmd; ExtSuccess = $false; ContinueSuccess = $false }
     }
     Write-Log "[成功] VS Code 路径验证通过" 'INFO'
 
@@ -715,7 +805,7 @@ function Main {
     Remove-NonWhitelistExtensions -VSCodeCmd $codeCmd
 
     # Step 3: 复制 settings.json 原封不动
-    Copy-SettingsJson
+    $settingsSuccess = Copy-SettingsJson
 
     # Step 3b: 写入 locale.json（VS Code 1.90+ 通过此文件决定显示语言）
     Write-LocaleJson
@@ -729,13 +819,29 @@ function Main {
         CodeCmd = $codeCmd
         ExtSuccess = $extSuccess
         ContinueSuccess = $continueSuccess
+        SettingsSuccess = $settingsSuccess
     }
 }
 
-# 直接执行，返回结果供 Setup-FlashTap.ps1 调用
-$mainResult = Main
-if (-not $mainResult.ExtSuccess) {
-    Write-Log '[警告] 部分扩展安装失败，请检查上方日志' 'WARNING'
+# ── 全局 try/catch：防止未处理异常导致退出码 1 ──
+try {
+    $mainResult = Main
+    if (-not $mainResult.ExtSuccess) {
+        Write-Log '[警告] 部分扩展安装失败，请检查上方日志' 'WARNING'
+    }
+    if (-not $mainResult.SettingsSuccess) {
+        Write-Log '[警告] settings.json 配置失败' 'WARNING'
+    }
+    if (-not $mainResult.ContinueSuccess) {
+        Write-Log '[警告] Continue 配置失败' 'WARNING'
+    }
+    if (-not $mainResult.ExtSuccess -and -not $mainResult.SettingsSuccess -and -not $mainResult.ContinueSuccess) {
+        Write-Log '[错误] VS Code 配置全部失败' 'ERROR'
+        exit 2
+    }
+    exit 0
+} catch {
+    Write-Log "[致命错误] install-vscode.ps1 未处理异常: $($_.Exception.Message)" 'ERROR'
+    Write-Log "[调试] 异常位置: $($_.InvocationInfo.PositionMessage)" 'ERROR'
     exit 2
 }
-exit 0
