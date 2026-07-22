@@ -308,3 +308,89 @@ line2
 15. **虚拟机测试能发现权限/网络问题**：但无 GPU，不能验证推理
 16. **空白账户测试能发现隔离问题**：但受系统级软件干扰
 17. **空白电脑测试是最终验收标准**：100% 还原真实用户体验
+
+---
+
+## 2026-07-23 · GitHub 分发修复 3 轮（半离线包定义 + 真实环境验证）
+
+### 背景
+VM 7 轮测试通过后，将代码 push 到 GitHub。但在 `本人2`（真实 Win11 空白账户）上从 GitHub Download ZIP 测试时，发现多个仅在实际分发链路中才暴露的 bug。
+
+### Bug #24: bat 编码导致 Win10/Win11 中文乱码
+
+**现象**：Win10 用户运行 bat 后满屏 `'xxx' 不是内部或外部命令`，Win11 `本人2` 上右键管理员后 10 秒关闭。
+
+**根因**：bat 用 UTF-8 BOM + `chcp 65001`，Win10 cmd 对 BOM 敏感；`chcp 65001` 后中文注释乱码，每行被当成命令执行。
+
+**解决**：bat 全部改为英文，去掉 `chcp 65001`，保存为 ANSI(GBK) 编码。
+
+**影响文件**：`一键安装FlashTap.bat`
+
+### Bug #25: GitHub Download ZIP 的 Mark-of-the-Web
+
+**现象**：从 GitHub ZIP 解压后，bat/ps1 被 Windows 标记为"来自 Internet"，无法执行。
+
+**根因**：Windows 给网络下载文件附加 NTFS 流标记 `Zone.Identifier=3`。
+
+**解决**：bat 开头加入 `Unblock-File` 递归解锁。
+
+**影响文件**：`一键安装FlashTap.bat`
+
+### Bug #26: `2>$null` 在 cmd 传参时被错误解析
+
+**现象**：Unblock-File 的 `2>$null` 被 cmd 当成重定向，导致命令无效。
+
+**根因**：PowerShell 重定向语法 `2>$null` 包裹在 cmd `-Command "..."` 双引号内时，cmd 先解析。
+
+**解决**：改用 PowerShell 原生 `-ErrorAction SilentlyContinue`。
+
+**影响文件**：`一键安装FlashTap.bat`
+
+### Bug #27: GitHub 文件未同步，跑的是旧代码
+
+**现象**：`本人2` 测试时日志显示旧版特征（中文"第零步"、"第一步"），无 `installFailed`/`needDeElevate`/`explorer.exe`。
+
+**根因**：`git push` 多次失败（SSH 22 端口被封、token 权限不足），关键文件 `Setup-FlashTap.ps1` 从未成功 push。
+
+**解决**：从 `C:\flashtap`（VM 共享源）恢复真实测试通过版本，commit + force push。
+
+**教训**：push 后必须验证 GitHub raw URL 内容，不能仅凭 `git push` 输出判断成功。
+
+### Bug #28: Git LFS 指针文件被当成真实文件
+
+**现象**：GitHub Download ZIP 里的 `mingw64.zip` 只有 134B，解压报错"找不到中央目录结尾记录"。
+
+**根因**：Git LFS 在上传大文件时替换为指针文件，Download ZIP 不包含真实 LFS 对象。
+
+**解决**：大文件改为 GitHub Release 直链分发，不用 Git LFS。
+
+**影响**：半离线包最终定义——代码在 Download ZIP，离线大文件在 Release 附件。
+
+### 半离线包最终定义
+
+| 组件 | 大小 | 策略 | 分发方式 |
+|------|:--:|:--:|------|
+| MinGW (mingw64.zip) | 234MB | 离线 | GitHub Release |
+| 3个VSIX扩展 | 83MB | 离线 | GitHub Release |
+| Ollama 安装器 | 800MB | 在线 | 脚本自动下载 |
+| VS Code 安装器 | 90MB | 在线 | 脚本自动下载 |
+| AI 模型 GGUF | 4.3GB | 在线 | ModelScope 自动下载 |
+| Python | <1MB | 在线 | 镜像自动下载 |
+
+**用户流程**：Download ZIP（50KB）+ Release 下载 4 个文件（312MB）→ 放同目录 → 右键 bat → 15 分钟装完。
+
+### 项目状态总结（2026-07-23 凌晨）
+
+| 阶段 | 状态 | 说明 |
+|------|:--:|------|
+| VM 端到端测试 | ✅ 7 轮通过 | Bug #13-#23 全部修复，F5 MinGW 编译史上首次通过 |
+| GitHub 分发 | ✅ 代码同步 | 半离线包架构落地，Release 附件就绪 |
+| 真实 Win11 测试 | ⚠️ 待验证 | `本人2` 账户半离线包完整测试（预计 07-23 白天） |
+
+### 架构演进评价
+
+v0.01（全在线）→ v0.02（半离线）是一次**基于实际网络环境数据的架构重评估**：
+- 不是"想当然"选择全在线或全离线
+- 而是逐一测试每个下载源的稳定性，将不稳定的源（MinGW、VSIX 扩展）离线化
+- 稳定的源（Ollama 官网、微软 CDN、ModelScope）保持在线以减小包体积
+- 这种"按稳定性分层的混合架构"比纯在线更稳，比纯离线更轻
