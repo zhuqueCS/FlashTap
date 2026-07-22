@@ -1,45 +1,29 @@
-# ============================================
-# FlashTap - .gitignore
-# ============================================
+# Ollama 安装包 (太大，GitHub 限制 100MB)
+OllamaSetup.exe
 
-# === 大文件（不上传 Git，分发时单独下载） ===
-*.zip
-*.exe
-*.vsix
-*.gguf
-*.bin
-*.pth
-*.safetensors
-
-# === 模型目录 ===
-models/
-
-# === VSIX 离线扩展（放项目根目录即可被脚本检测） ===
-vsix_stage/
-*.vsix
-
-# === 运行时日志 ===
-*.log
-
-# === Python 缓存 ===
+# Python
 __pycache__/
 *.pyc
 *.pyo
 
-# === 运行时临时文件 ===
-flashtap-user.txt
+# 日志
+*.log
+OldLogs/
+
+# 备份文件
+*.backup-*
+
+# 项目状态文档
+项目状态.txt
+
+# VS Code 用户配置 (含个人路径)
+vscode-settings.json
+
+# 模型文件 (太大)
+models/
+
+# 临时文件
 .flashtap-env.txt
+flashtap-user.txt
 .ollama_latest_version
-
-# === IDE / 编辑器 ===
-.vscode/
-.codebuddy/
-.idea/
-
-# === 操作系统 ===
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# === Git 自身 ===
-.git/
+.wsl-distro-name

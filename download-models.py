@@ -83,12 +83,6 @@ def download_with_modelscope():
 
 
 def download_model():
-    # 本地优先：离线包场景，打包目录已含模型 gguf 则跳过下载，直接导入 Ollama
-    for cand in [BASE_DIR / QWEN_MODEL_FILE, MODELS_DIR / QWEN_MODEL_FILE]:
-        if cand.exists() and cand.stat().st_size > 100 * 1024 * 1024:
-            write_log(f"发现本地模型文件，跳过下载: {cand}")
-            return cand
-
     write_log("正在下载 Qwen2.5-Coder-7B（约 5GB），可能需要几分钟...")
     try:
         return download_with_modelscope()
@@ -234,24 +228,15 @@ def _pull_from_registry():
 
 
 def verify_model():
-    write_log("正在验证 Ollama 中的模型（实际加载测试）...")
+    write_log("正在验证 Ollama 中的模型...")
     try:
-        result = subprocess.run(["ollama", "list"], capture_output=True, encoding='utf-8', errors='replace')
+        result = subprocess.run(["ollama", "list"], capture_output=True, encoding='utf-8', errors='replace', timeout=15)
         stdout = result.stdout or ""
         if "qwen2.5-coder:7b" not in stdout:
             write_log("模型中未找到 qwen2.5-coder:7b，模型未部署")
             return False
 
-        write_log("正在测试模型实际加载（约 30-60 秒）...")
-        test_result = subprocess.run(
-            ["ollama", "run", "qwen2.5-coder:7b", "hi"],
-            capture_output=True, encoding='utf-8', errors='replace', timeout=120
-        )
-        if test_result.returncode != 0:
-            stderr = test_result.stderr or ""
-            write_log(f"模型加载测试失败: {stderr}")
-            return False
-        write_log("模型验证通过（实际加载测试成功）")
+        write_log("模型验证通过（ollama list 确认 qwen2.5-coder:7b 已就绪）")
         return True
     except Exception as e:
         write_log(f"模型验证失败: {e}")
@@ -274,7 +259,7 @@ def get_latest_ollama_version():
 
     api_urls = [
         "https://api.github.com/repos/ollama/ollama/releases/latest",
-
+        "https://gh-proxy.com/https://api.github.com/repos/ollama/ollama/releases/latest",
         "https://ghproxy.net/https://api.github.com/repos/ollama/ollama/releases/latest",
     ]
 
@@ -341,7 +326,7 @@ def check_and_update_ollama():
             # 带版本号的直接链接，代理无法用旧缓存糊弄
             versioned_path = f"download/{latest_tag}/OllamaSetup.exe"
             download_urls = [
-
+                ("GitHub 代理 gh-proxy.com (版本直链)", f"https://gh-proxy.com/https://github.com/ollama/ollama/releases/{versioned_path}"),
                 ("GitHub 代理 ghproxy.net (版本直链)", f"https://ghproxy.net/https://github.com/ollama/ollama/releases/{versioned_path}"),
                 ("GitHub Releases (版本直链)", f"https://github.com/ollama/ollama/releases/{versioned_path}"),
                 ("ollama.com", "https://ollama.com/download/OllamaSetup.exe"),
@@ -350,7 +335,7 @@ def check_and_update_ollama():
             # 查不到版本号就用 /latest/ 兜底，加时间戳破缓存
             ts = int(time.time())
             download_urls = [
-
+                ("GitHub 代理 gh-proxy.com", f"https://gh-proxy.com/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe?t={ts}"),
                 ("GitHub 代理 ghproxy.net", f"https://ghproxy.net/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe?t={ts}"),
                 ("GitHub Releases", f"https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe?t={ts}"),
                 ("ollama.com", "https://ollama.com/download/OllamaSetup.exe"),
@@ -625,19 +610,36 @@ def main():
     write_log("=" * 50)
     write_log("模型部署开始")
     write_log("=" * 50)
+    main_start = time.time()
 
     try:
+        write_log("[步骤 1/6] 创建模型目录...")
         MODELS_DIR.mkdir(exist_ok=True)
+        write_log(f"  模型目录: {MODELS_DIR}")
+
+        write_log("[步骤 2/6] 安装 Python 依赖...")
         install_deps()
-        # 先确保 Ollama 路径/服务就绪，再做版本检查
-        # （旧顺序 check_and_update_ollama 先 sc start，ensure_ollama_paths 又 sc stop，冲突）
+
+        write_log("[步骤 3/6] 确保 Ollama 路径和服务就绪...")
         ensure_ollama_paths()
+
+        write_log("[步骤 4/6] 检查 Ollama 版本...")
         check_and_update_ollama()
+
+        write_log("[步骤 5/6] 下载 Qwen2.5-Coder-7B 模型（约 4.7GB）...")
+        write_log("  下载源: 阿里魔搭（ModelScope），国内速度快")
+        write_log("  支持断点续传，中断后重新运行即可继续")
         model_path = download_model()
+
+        write_log("[步骤 6/6] 导入模型到 Ollama + 验证...")
         create_ollama_model(model_path)
         ok = verify_model()
+
+        elapsed = int(time.time() - main_start)
+        write_log(f"========== 模型部署完成（总耗时 {elapsed} 秒）==========")
+
         if ok:
-            write_log("模型部署完成，接下来将进行 Continue 配置。")
+            write_log("模型部署成功，接下来将进行 Continue 配置。")
         else:
             write_log("模型部署未完成，Continue 可能无法使用，但安装流程继续")
         return 0 if ok else 1

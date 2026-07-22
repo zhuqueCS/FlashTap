@@ -1,206 +1,273 @@
-# FlashTap · 半离线本地 AI 编程环境部署包（说明文档）
+<div align="center">
 
-> **本文档面向接手者 / 维护者。** 讲清四件事：这是什么、目标是什么、**半离线到底"半"在哪**、以及**稳定性与已知坑（最重要，避免重蹈覆辙）**。
-> 旧的 README 已废弃（其中 WSL / RTX 5060 / D 盘等描述均已过时，请勿参考）。
+# FlashTap `v0.01`
+
+### 本地 AI 编程助手 · 一键部署
+
+**零配置 · 零依赖 · 零网络要求（离线包模式）· 全自动**
+
+Windows 10 / 11 上一键安装完整的本地 AI 编程环境：Ollama + Qwen2.5-Coder-7B + VS Code + Continue，全程不联网推理，数据不出本机。
+
+> ⚠️ **v0.01 当前状态**：本版本仅在开发者本机环境测试通过，**尚未在空白电脑（全新 Windows 环境）上验证**。在陌生环境中可能存在路径、权限、驱动等兼容性问题，请谨慎使用。
+
+</div>
 
 ---
 
-## 一、这是什么（项目定位）
+## ✨ 核心特性
 
-一个**一键部署本地 AI 编程助手**的安装包。面向一张**干净的 Windows 10 / 11**（没有 Python、没有 VS Code、没有 Ollama），用户只双击一个 `.bat`，约 15–30 分钟后得到：
-
-| 产物 | 说明 |
+| 特性 | 说明 |
 |------|------|
-| VS Code | 用户级静默安装 |
-| Continue 插件 | 本地 AI 编程前端（对话 / 补全） |
-| Qwen2.5-Coder-7B 模型 | 经 ollama 本地运行，代码不出本机 |
-| 原生 C++ 编译环境 | MinGW-w64（GCC + GDB），替代 WSL，F5 直接编译调试 |
-
-**核心价值**：装完之后 AI 推理 100% 本地，敏感代码不上云。
-
----
-
-## 二、目标
-
-1. **零命令行**：用户只需双击 `一键安装FlashTap.bat`，UAC 点"是"，全程不用敲命令。
-2. **本地优先**：AI 推理走 `ollama + Qwen GGUF`，不连任何外部 API。
-3. **半离线可部署**：关键大件（模型 / VS Code / Ollama / MinGW）允许**预置离线包**，弱网或断网也能装。
-4. **安全**：不修改系统全局 PowerShell 执行策略（仅当前进程 `-ExecutionPolicy Bypass`），不驻留后台服务，不留全局环境变量污染。
+| 🖱️ **真正一键** | 双击 `.bat`，自动提权，自动安装全部组件，无需任何命令行操作 |
+| 🔒 **完全本地** | AI 推理跑在本机 GPU 上，代码不上传云端，零隐私泄露 |
+| 🚫 **零依赖** | 不预装 Python / VS Code / Ollama 也能跑，脚本全部自动搞定 |
+| 🛡️ **安全隔离** | 不破坏用户已有环境，不卸载已有扩展，多账户互不干扰 |
+| 🌐 **多镜像兜底** | Ollama / VS Code / Python 均内置国内镜像源，网络再差也能下 |
+| 📊 **环境自检** | 安装完成后自动检测所有组件状态，一眼确认是否成功 |
 
 ---
 
-## 三、什么是"半离线包"（边界说明）
+## 📋 系统要求
 
-"半离线"指：**联网能装，断网/弱网也能装，前提是提前把大件放进包里**。具体边界：
+| 要求 | 最低 | 推荐 |
+|------|------|------|
+| 操作系统 | Windows 10 1809+ | Windows 11 |
+| 显卡 | NVIDIA 6GB 显存 | NVIDIA 8GB+ 显存 |
+| 磁盘空间 | 10GB 可用 | 20GB 可用 |
+| 内存 | 8GB | 16GB |
+| 网络 | 首次安装需要联网 | — |
 
-| 组件 | 离线方式（预置到 FlashTap 根目录） | 不预置时 |
-|------|--------------------------------------|-----------|
-| **模型** | `models/` 下放入 GGUF（如 `qwen2.5-coder-7b-instruct-q4_k_m.gguf`）+ `Modelfile.qwen` | 脚本用 `download-models.py` 从 ModelScope 拉（国内源，支持断点续传） |
-| **VS Code** | 放入 `VSCodeUserSetup-*.exe` | 联网从官方下载 |
-| **Ollama** | 放入 `OllamaSetup.exe` | 联网下载（内置多镜像源自动切换） |
-| **MinGW-w64** | 放入 `mingw64.zip` / `mingw64.7z` | 联网下载并解压到 `C:\FlashTap\mingw64` |
-| **VS Code 扩展**（Continue / 中文包 / Code Runner） | ❌ **不支持离线**，必须联网从 Marketplace / open-vsx 安装 | 联网安装 |
-
-> 约定：离线包放好后，脚本会自动检测并使用，**跳过对应联网下载**。具体识别的文件名以各安装脚本中的检测逻辑为准。
-> 最简"真·离线"条件：模型 GGUF + VS Code 安装器 + OllamaSetup + MinGW 包全部预置，且目标机能联网装扩展。
+> 💡 **没有 NVIDIA 显卡？** 也能装，模型会跑在 CPU 上，速度较慢但功能完整。
 
 ---
 
-## 四、正确的安装姿势（务必看）
+## 🚀 快速开始
 
-**统一入口：右键 → 以管理员方式运行**
+### 三步完成安装
 
-| 操作 | 结果 |
-|------|------|
-| **右键** `一键安装FlashTap.bat` → **"以管理员方式运行"** | ✅ 正确入口。脚本以真实用户 + 管理员权限运行，扩展/配置自动装到正确用户目录。 |
-| **双击** `一键安装FlashTap.bat` | ❌ 会提示"没有管理员权限"，无法继续。**请关闭后右键管理员运行。** |
+```
+1. 下载    →  从 GitHub 下载 ZIP 压缩包并解压
+2. 运行    →  双击「一键安装FlashTap.bat」
+3. 等待    →  约 15-30 分钟，全自动完成
+```
 
-> 为什么不用双击自动提权：旧版双击自动 UAC 提权方案依赖 VirtualBox 共享文件夹路径硬编码，在非 VM 环境会静默失败。统一为右键管理员运行后，无论在 VM、物理机、远程桌面都稳定。
-> 2026-07-22 重构详情见 `DEVLOG.md` Bug #13–#18。
+### 安装流程
 
-**安装中注意**：
-- 必须**管理员权限**跑（`install.log` 首行 `[诊断] 管理员权限: 是`）。普通用户下 C++ 配置无法写系统 PATH，会失败。
-- 主终端跑完前**不要关窗口**（约 15–20 分钟，含模型导入）。
-- 安装完成**通过桌面"FlashTap"快捷方式**启动 VS Code（已预置打开 `C:\FlashTap\cpp-workspace`，含中文界面）。
+```
+双击 bat
+  │
+  ├─ 第 0 步  检测 Python（未安装则自动下载安装）
+  ├─ 第 1 步  安装 Ollama + 配置环境变量 + 启动服务
+  ├─ 第 2 步  安装 VS Code + Continue 扩展 + 中文语言包
+  ├─ 第 3 步  下载 Qwen2.5-Coder-7B 模型 + 导入 Ollama
+  ├─ 第 4 步  配置 Continue 插件 + 复制配置文件
+  ├─ 第 5 步  启动 VS Code + 环境自检
+  │
+  └─ ✅ 安装完成，VS Code 自动打开
+```
+
+### 首次使用
+
+安装完成后，VS Code 会自动打开。按 `Ctrl+L` 唤出 Continue 对话面板，输入你的编程问题即可：
+
+```
+> 用 C 语言写一个冒泡排序
+> 帮我解释这段代码的逻辑
+> 优化这个函数的性能
+```
 
 ---
 
-## 五、自动完成的内容（顺序）
+## 📁 项目结构
 
-| 步 | 内容 |
+```
+FlashTap/
+├── 一键安装FlashTap.bat        # 启动入口（用户双击此文件）
+├── Setup-FlashTap.ps1          # 主控制脚本（流程编排 + Python 自动安装）
+├── install-flashtap.ps1        # Ollama 安装 + 多镜像下载 + 环境配置
+├── install-vscode.ps1          # VS Code 安装/复用 + 扩展 + 配置
+├── download-models.py          # Qwen 模型下载 + Ollama 导入
+├── configure-continue.py       # Continue 插件配置生成
+├── setup-cpp-env.ps1           # C++ 编译环境（WSL + g++，可选）
+├── check-environment.ps1       # 安装后环境自检
+├── settings.json               # VS Code 用户配置
+├── extensions.list             # 扩展白名单
+├── config.yaml                 # Continue 配置（AUTODETECT 模式）
+├── config.json / config.ts     # Continue 配置（兼容多版本）
+└── .gitignore
+```
+
+---
+
+## ⚙️ 自动安装内容
+
+| 组件 | 版本 | 大小 | 说明 |
+|------|------|------|------|
+| Python | 3.12.7 | ~25MB | 华为镜像优先，官方源兜底 |
+| Ollama | Latest | ~1.4GB | 6 镜像源自动切换，支持离线包 |
+| Qwen2.5-Coder-7B | Instruct GGUF | ~4.7GB | 阿里魔搭下载，支持断点续传 |
+| VS Code | Latest | ~90MB | 4 镜像源（官方 + Azure中国 + 华为 + 清华） |
+| Continue 扩展 | Latest | ~5MB | VS Code 扩展商店直装 |
+| 中文语言包 | Latest | ~3MB | VS Code 扩展商店直装 |
+
+### 环境变量配置
+
+| 变量 | 值 | 说明 |
+|------|----|------|
+| `OLLAMA_HOST` | `127.0.0.1:11434` | 仅本机访问 |
+| `OLLAMA_MAX_VRAM` | `6144` | 显存限制 6GB（适配 8GB 显卡） |
+| `OLLAMA_MODELS` | 自动选择 | D 盘优先，不可写时回退用户目录 |
+| `OLLAMA_ORIGINS` | `*` | 允许 Continue 跨域调用 |
+
+---
+
+## 🔧 技术架构
+
+```
+┌─────────────────────────────────────────┐
+│              用户双击 bat                │
+│                 ↓                       │
+│  ┌─────────────────────────────────┐    │
+│  │     Setup-FlashTap.ps1          │    │
+│  │     (主控脚本 · 流程编排)        │    │
+│  └──────────┬──────────────────────┘    │
+│             │                           │
+│     ┌───────┼───────┬───────┬─────┐     │
+│     ↓       ↓       ↓       ↓     │     │
+│  Ollama  VS Code  模型   Continue │     │
+│  安装     安装    下载    配置     │     │
+│     │       │       │       │     │     │
+│     └───────┴───────┴───────┴─────┘     │
+│                 ↓                       │
+│  ┌─────────────────────────────────┐    │
+│  │      环境自检 + 启动 VS Code     │    │
+│  └─────────────────────────────────┘    │
+└─────────────────────────────────────────┘
+
+推理链路: VS Code → Continue → HTTP → Ollama → GPU/CPU → Qwen 模型
+```
+
+---
+
+## 🛡️ 安全设计
+
+### 不破坏用户环境
+
+- **VS Code 三层安全锁**：检测到已安装的 VS Code 只复用不重装，避免损坏运行中的实例
+- **扩展零删除**：绝不卸载用户已有的任何 VS Code 扩展
+- **配置可回滚**：复制配置文件前自动备份用户原有配置
+- **进程零误杀**：不使用 `taskkill /F /IM Code.exe`，只按用户名过滤
+
+### 空白账户隔离模式
+
+当检测到当前账户没有用户级软件但系统级有时，自动启用隔离模式：
+- 忽略系统级 Ollama / VS Code
+- 为当前账户安装独立的用户级副本
+- 多账户互不干扰，测试完可独立清理
+
+---
+
+## ❓ 常见问题
+
+<details>
+<summary><b>双击后闪退</b></summary>
+
+1. 确保是**双击运行**（脚本会自动请求管理员权限，不需要右键）
+2. 查看 `install.log` 和 `vscode-install.log` 的最后几行错误信息
+3. 如果是网络问题，检查网络连接后重试
+
+</details>
+
+<details>
+<summary><b>Ollama 下载太慢或失败</b></summary>
+
+- 脚本内置 6 个镜像源，会自动切换尝试
+- **离线加速**：提前下载 `OllamaSetup.exe`（[下载地址](https://ollama.com/download/OllamaSetup.exe)）放在脚本同目录，自动跳过下载
+- 约 1.4GB，首次下载预计 10-30 分钟（视网络而定）
+
+</details>
+
+<details>
+<summary><b>模型下载慢</b></summary>
+
+- 模型从阿里魔搭（ModelScope）下载，国内速度有保障
+- 支持断点续传，中断后重新运行脚本即可继续
+- 约 4.7GB，正常网速 5-15 分钟
+
+</details>
+
+<details>
+<summary><b>VS Code 安装失败（退出码 5）</b></summary>
+
+- 原因：VS Code 正在运行，文件被锁定
+- 解决：关闭所有 VS Code 窗口后重新运行脚本
+- 脚本已内置安全锁，不会损坏正在运行的 VS Code
+
+</details>
+
+<details>
+<summary><b>安装后 Continue 没反应</b></summary>
+
+1. 检查右下角任务栏是否有 Ollama 图标（羊驼）
+2. 在 PowerShell 输入 `ollama list`，确认看到 `qwen2.5-coder:7b`
+3. 按 `Ctrl+Shift+P` → `Continue: Select Model` → 选择 `qwen-local`
+4. 重启 VS Code 再试
+
+</details>
+
+<details>
+<summary><b>显存溢出报错</b></summary>
+
+- 本项目需要 8GB+ 显存的 NVIDIA 显卡
+- 确认环境变量 `OLLAMA_MAX_VRAM` 已设置为 `6144`
+- 没有 NVIDIA 显卡也能用，会自动回退到 CPU 推理（速度较慢）
+
+</details>
+
+---
+
+## 📊 快捷键
+
+| 快捷键 | 功能 |
+|--------|------|
+| `Ctrl+L` | 侧边栏打开 Continue 对话 |
+| `Ctrl+I` | 编辑器内行内提问（Inline Chat） |
+| `Ctrl+Shift+R` | 选中代码后让 AI 解释 / 优化 |
+| `Ctrl+Alt+N` | Code Runner 一键运行当前代码 |
+| `F5` | 启动调试（C/C++ 需先配置 `launch.json`） |
+
+---
+
+## 🔬 技术栈
+
+| 层 | 技术 |
 |----|------|
-| 0 | 检测并自动安装 Python 3.12（未装时；python.org + 华为镜像兜底） |
-| 1 | 安装 Ollama（多镜像源，约 1.4GB）；设置显存上限 `OLLAMA_MAX_VRAM`（按显存选型，8GB 显存机用 `6144`） |
-| 2 | 静默安装 VS Code（用户级） |
-| 3 | 安装扩展：Continue、VS Code 中文语言包、Code Runner（扩展列表见 `extensions.list`） |
-| 4 | 配置 Continue（`config.json/.ts/.yaml`，无条件 `AUTODETECT + ollama`，端口 11434） |
-| 5 | 配置 C++ 编译环境：**Windows 原生 MinGW-w64**（不再依赖 WSL） |
-| 6 | 拉取 / 导入 Qwen2.5-Coder-7B 模型，启动 Ollama 服务并验证可用 |
-| 7 | 关闭 VS Code 工作区信任 + 创建桌面快捷方式 |
-| 8 | `check-environment.ps1` 自检，输出结果 |
+| AI 模型 | Qwen2.5-Coder-7B-Instruct（GGUF Q4_K_M 量化） |
+| 推理引擎 | Ollama（llama.cpp 后端） |
+| 编辑器 | Visual Studio Code |
+| AI 插件 | Continue.dev（AUTODETECT 模式） |
+| 脚本 | PowerShell 5.1 + Python 3.12 |
+| 下载源 | ModelScope + GitHub + 华为镜像 + 清华镜像 + Azure中国 |
 
 ---
 
-## 六、项目文件结构
+## 📝 许可证
 
-```
-flashtap_V0.01 - 副本/
-│
-├── 一键安装FlashTap.bat          ← 入口（右键→以管理员运行）
-│
-├── 【核心脚本】
-├── Setup-FlashTap.ps1             ← 主编排脚本，按序调用各子脚本
-├── install-flashtap.ps1           ← Ollama 安装 + 多镜像下载 + 配置
-├── install-vscode.ps1             ← VS Code 静默安装 + 扩展 + 配置
-├── setup-cpp-env.ps1              ← C++ 编译环境（MinGW-w64 GCC/GDB）
-├── check-environment.ps1          ← 安装后环境自检
-├── preflight-check.ps1            ← 网络可达性预检
-│
-├── 【Python 辅助脚本】
-├── download-models.py             ← 模型下载 / 导入（ModelScope，断点续传）
-├── configure-continue.py          ← Continue 插件配置生成
-│
-├── 【Continue 配置（三件套，AUTODETECT + ollama）】
-├── config.json
-├── config.ts
-├── config.yaml
-├── continue-config.json
-├── continue-config.ts
-│
-├── 【VS Code 配置】
-├── settings.json                  ← 工作区信任禁用 + 默认设置
-├── extensions.list                ← 扩展白名单（仅装白名单内扩展）
-│
-├── 【离线包（可选，预置则跳过联网下载）】
-├── mingw64.zip                    ← MinGW-w64 编译环境
-├── VSCodeUserSetup-*.exe          ← VS Code 安装器
-├── OllamaSetup.exe                ← Ollama 安装器
-├── models/                        ← 离线模型（GGUF + Modelfile）
-│   └── *.gguf / Modelfile.*
-│
-├── 【文档】
-├── README.md                      ← 本文档（项目说明 + 稳定性 + 故障排查）
-├── DEVLOG.md                      ← 开发日志（Bug #1–#23 完整记录）
-├── flashtap开发思路.md            ← 设计哲学与取舍
-├── Agent-VM协同测试工作流.md      ← Agent + VM 协同测试方法论
-├── VM测试环境与全流程接手文档.md  ← VM 环境配置 + 快照 + 接手流程
-├── 历史测试与修复记录.md          ← 2026-07-21~22 测试记录合并
-└── 项目状态.txt                   ← 当前状态摘要
-```
-
-| 文档 | 用途 |
-|------|------|
-| `README.md` | **入门首选**：项目是什么、怎么装、已知坑、故障排查 |
-| `DEVLOG.md` | **开发参考**：每个 bug 的根因、修复方案、影响文件 |
-| `Agent-VM协同测试工作流.md` | **测试方法论**：Agent + 人类如何通过 VM 协同迭代 |
-| `VM测试环境与全流程接手文档.md` | **环境交接**：VM 配置、快照、共享文件夹、guestcontrol 命令 |
-| `历史测试与修复记录.md` | **历史档案**：早期测试报告与静态审查的合并记录 |
+MIT License — 可自由使用、修改、分发。
 
 ---
 
-## 七、稳定性与已知问题（**最重要的一节**）
+## 🤝 贡献
 
-### A. 已修复的历史坑（接手者请勿再犯）
+欢迎提交 Issue 和 PR。
 
-#### 🔴 A1. VS Code 打开后"只能看代码、所有功能用不了"（受限模式 / 保护模式）
-- **现象**：桌面快捷方式启动 VS Code，扩展（Continue、C/C++）全被禁用，仅能浏览代码。
-- **根因（双重）**：
-  1. `Setup-FlashTap.ps1` 曾声称"已关闭工作区信任（settings.json）"，但**从未真正写入** `security.workspace.trust.enabled: false`。
-  2. 更隐蔽：**主安装脚本是提权（Administrator）运行的**，脚本里写 VS Code 用户配置用的是 `$env:APPDATA` / `$env:USERPROFILE`，这些变量指向 **Administrator 目录**；而 VS Code 实际是以**普通用户**（`-Verb RunAsUser`）启动并读取**该普通用户**的 `Code\User\settings.json`。于是配置"写了但不生效"。
-- **修复**（2026-07-22）：新增 `$RealUserProfile` / `$RealAppData`（取 `OriginalUserProfile` 参数，即真正运行 VS Code 的用户），所有用户级路径改用之，并**真正写入** `security.workspace.trust.enabled: false` 到该用户目录。
-- **后人注意**：凡涉及 VS Code 用户级配置、扩展目录，绝不能用 `$env:USERPROFILE` / `$env:APPDATA`，一律用 `$RealUserProfile` / `$RealAppData`。
-
-#### 🔴 A2. C++ 配置失败导致整个安装中断、VS Code 不启动
-- **现象**："啥也没弹出来"，`install.log` 末行为 `脚本退出码: 1`，`cpp-env.log` 显示 C++ 配置失败。
-- **根因**：`Setup-FlashTap.ps1` 在 C++ 配置失败时 `exit 1`，主流程直接中断，根本走不到"启动 VS Code"。
-- **修复**（2026-07-22）：C++ 失败改为**仅告警、不中断**，保证 VS Code + 本地 AI 对话仍可用；F5 调试可在补齐 `mingw64.zip` 后重跑补全。
-- **后人注意**：VS Code + 本地推理是核心功能，不应被可选项的失败阻断。
-
-#### 🟠 A3. 扩展安装曾整批失败（参数传递 bug）
-- **现象**：`--install-extension` 把 4 个扩展名当**一个字符串**传入，全部安装失败（DEVLOG Bug#11）。
-- **状态**：已修复（逐条传参）。`extensions.list` 当前为：`continue.continue` / `ms-ceintl.vscode-language-pack-zh-hans` / `ms-vscode-remote.remote-wsl` / `formulahendry.code-runner`。
-- **注意**：`remote-wsl` 是为旧 WSL 方案遗留的，当前 C++ 已改**原生 MinGW-w64**，该扩展实际已不使用，可保留不影响。
-
-### B. 已知设计限制（非 bug，按需取舍）
-
-- **扩展必须联网安装**：Continue / 中文包 / Code Runner 无离线机制，部署机需能连 Marketplace。
-- **模型选型与显存**：默认 Qwen2.5-Coder-7B `q4_k_m` 量化约 4–5GB 显存，需 8GB+ 显存；小显存机型需换更小模型（改 `download-models.py` 的 `QWEN_MODEL_FILE` 与 Continue 配置）。
-- **磁盘空间**：模型 + Ollama + VS Code 合计约 20GB+，安装目录所在盘需留足。
-- **WSL 方案已废弃**：早期版本走"WSL + Ubuntu + 远端 C/C++ 扩展"，复杂且易失败；现统一为 **Windows 原生 MinGW-w64（GCC + GDB）**，F5 直接在 Windows 端编译调试，无需 WSL、无需 Visual Studio。
+- 开发日志：[DEVLOG.md](DEVLOG.md)
+- Bug 记录：每个 Bug 都有详细的现象、原因、解决方案
 
 ---
 
-## 八、故障排查速查
+<div align="center">
 
-| 现象 | 优先检查 |
-|------|----------|
-| 提示"没有管理员权限" | 关闭窗口 → 右键 `一键安装FlashTap.bat` → 以管理员方式运行 |
-| VS Code 没弹出 | 看 `install.log` 末尾：是否出现 `[错误] VS Code 启动失败` |
-| VS Code 能开但"只能看代码" | 受限模式：打开后点顶部黄色横幅"**信任此文件夹**"；或重装（已修工作区信任） |
-| VS Code 弹 JS 错误弹窗 | 说明以管理员身份启动了 VS Code（非推荐方式）；从桌面快捷方式打开即可正常 |
-| 扩展装不上 | 是否联网？Continue 等必须联网装 |
-| F5 编译失败 | 检查 `C:\FlashTap\mingw64\bin\g++.exe` 是否存在；检查 `launch.json`/`tasks.json` 是否用绝对路径 |
-| 模型验证警告 | 多半是 Ollama 那一瞬间未响应；确认 `http://localhost:11434` 能返回模型列表即可 |
-| 下载慢/失败 | 预置对应离线包到 FlashTap 根目录（见第三节） |
+**如果这个项目对你有帮助，请点个 ⭐ Star**
 
-**关键日志位置**（均在 FlashTap 根目录，随共享文件夹实时同步）：
-`install.log`（主流程）、`cpp-env.log`（C++/MinGW）、`download.log`（模型）、`vscode-install.log`、`configure.log`。
-
----
-
-## 九、给维护者的注意事项
-
-1. **改动前先读 `DEVLOG.md`**，里面记录了 Bug #1–#23 的完整修复历史；本 README 第七节是其浓缩版。
-2. **用户级路径陷阱**（见 A1）：任何写 VS Code 用户配置 / 扩展目录的代码，都用 `$RealUserProfile` / `$RealAppData`，**不要用 `$env:USERPROFILE` / `$env:APPDATA`**。
-3. **不要改回 WSL 方案**：MinGW-w64 是当前稳定路径。
-4. **不要因可选项失败而 `exit` 中断主流程**：核心交付物是 VS Code + 本地 AI 对话。
-5. **扩展白名单**以 `extensions.list` 为准，脚本只装清单内扩展，绝不卸载用户已有扩展。
-6. **安全底线**：保持"仅当前进程绕过执行策略、不驻留后台、不污染全局环境"，这是该包能在受限环境部署的前提。
-7. **修改后必须同步到 `C:\flashtap`**：桌面副本是工作区，`C:\flashtap` 是 VM 共享源。同步命令见 `Agent-VM协同测试工作流.md` 或 `VM测试环境与全流程接手文档.md`。
-8. **桌面上有两个 flashtap 文件夹**：`flashtap_V0.01`（旧版废弃）和 `flashtap_V0.01 - 副本`（当前工作区）。同步时务必确认路径，详见 `VM测试环境与全流程接手文档.md` 0.1 节。
-
----
-
-## 附：许可证
-
-MIT
+</div>

@@ -87,7 +87,5 @@
 "C_Cpp.default.intelliSenseMode": "gcc-x64",
 "remote.autoForwardPortsSource": "hybrid",
 "editor.mouseWheelZoom": true,
-"chat.viewSessions.orientation": "stacked",
-"security.workspace.trust.enabled": false,
-"security.workspace.trust.startupPrompt": "never"
+"chat.viewSessions.orientation": "stacked"
 }

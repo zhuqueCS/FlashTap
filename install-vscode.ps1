@@ -238,14 +238,12 @@ function Install-VSCode {
                     $uninstStr = $entry.UninstallString -replace '^"', '' -replace '"$', ''
                     $instDir = Split-Path -Parent $uninstStr
                     $codeExe = Join-Path $instDir 'Code.exe'
-                    if ($codeExe.StartsWith($env:USERPROFILE, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    if ($regRoot.Scope -eq 'user' -and $codeExe.StartsWith($env:USERPROFILE, [System.StringComparison]::OrdinalIgnoreCase)) {
                         if ($codeExe -notin $userCandidates) { $userCandidates += $codeExe }
                         Write-Log "[信息] 用户级注册表找到: $instDir"
-                    } else {
-                        # VS Code 装在非用户目录（如 D: 盘等非默认位置）：按系统级候选复用，
-                        # 不再强求注册表根必须是 HKLM（User 版安装器常把路径写在 HKCU 但装在别的盘）
+                    } elseif ($regRoot.Scope -eq 'system') {
                         if ($codeExe -notin $systemCandidates) { $systemCandidates += $codeExe }
-                        Write-Log "[信息] 注册表找到(非用户目录，按系统级复用): $instDir"
+                        Write-Log "[信息] 系统级注册表找到: $instDir（将复用，不重装）"
                     }
                 }
             }
@@ -286,23 +284,18 @@ function Install-VSCode {
     if ($userCandidates.Count -gt 0 -or (-not $userScopeOnly -and $systemCandidates.Count -gt 0)) {
         $allCandidates = @($userCandidates)
         if (-not $userScopeOnly) { $allCandidates += $systemCandidates }
-        # 只返回真实存在的路径：优先 code.cmd，其次 Code.exe。
-        # 绝不返回不存在的死路径（旧逻辑会返回 $allCandidates[0] 导致后续 Test-Path 抛异常）。
         foreach ($cand in $allCandidates) {
             $binDir = Split-Path -Parent $cand
             $cmdPath = Join-Path $binDir 'bin\code.cmd'
-            $codeExe = Join-Path $binDir 'Code.exe'
             if (Test-Path -LiteralPath $cmdPath) {
-                Write-Log "[信息] VS Code 已安装（注册表确认），复用 code.cmd: $cmdPath"
+                Write-Log "[信息] VS Code 正在运行（文件锁定），复用 code.cmd: $cmdPath"
                 return $cmdPath
             }
-            if (Test-Path -LiteralPath $codeExe) {
-                Write-Log "[信息] VS Code 已安装（注册表确认），复用 Code.exe: $codeExe"
-                return $codeExe
-            }
         }
-        # 所有候选路径都不存在（注册表残留/损坏）：不返回死路径，交由后续最终安全锁处理
-        Write-Log '[警告] 注册表报告了 VS Code 但所有候选路径均不存在，将按损坏处理' 'WARNING'
+        if ($allCandidates.Count -gt 0) {
+            Write-Log "[信息] VS Code 已安装（注册表确认），复用: $($allCandidates[0])"
+            return $allCandidates[0]
+        }
     }
 
     Write-Log '[信息] 目标用户无 VS Code，开始下载安装...'
@@ -340,9 +333,24 @@ function Install-VSCode {
         if ($anyVSCodeFound) { break }
     }
     if ($anyVSCodeFound) {
-        # 注册表有但找不到可执行文件，说明 VS Code 损坏，但不能由 FlashTap 重装（用户自己处理）
-        Write-Log '[错误] 检测到 VS Code 已安装但可执行文件缺失，请用户手动重装 VS Code，FlashTap 不会自动重装' 'Red'
-        throw '检测到已安装的 VS Code 但可执行文件缺失，为安全起见中止安装，请手动处理 VS Code 后重试'
+        # 注册表有但找不到可执行文件，说明 VS Code 损坏（可能是上次安装失败留下的残骸）
+        # 智能恢复：清理注册表 + 残留目录，然后重新下载安装
+        Write-Log '[警告] 检测到 VS Code 已损坏（注册表有但文件缺失），正在清理并重新安装...' 'Yellow'
+        try {
+            # 清理可能的残留目录
+            $possibleResidue = @(
+                (Join-Path $env:LOCALAPPDATA 'Programs\Microsoft VS Code'),
+                (Join-Path $env:USERPROFILE 'AppData\Local\Programs\Microsoft VS Code')
+            )
+            foreach ($r in $possibleResidue) {
+                if (Test-Path -LiteralPath $r) {
+                    Write-Log "[信息] 清理残留目录: $r"
+                    Remove-Item -LiteralPath $r -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+        } catch {}
+        # 不 throw，继续往下走下载安装器重新装
+        $anyVSCodeFound = $false
     }
 
     $installerPath = [System.IO.Path]::Combine($env:TEMP, 'VSCodeUserSetup-x64-latest.exe')
@@ -357,25 +365,6 @@ function Install-VSCode {
 
     # 校验已有安装器是否完整（VS Code 安装器约 90MB+）
     $installerValid = $false
-
-    # 本地优先：离线包场景，打包目录已含 VS Code 安装器则直接复用，零网络
-    $localVSCode = Join-Path $PROJECT_DIR 'VSCodeUserSetup-x64-latest.exe'
-    if (Test-Path $localVSCode) {
-        try {
-            $lb = [System.IO.File]::ReadAllBytes($localVSCode)
-            if ($lb.Length -gt 80MB -and $lb[0] -eq 0x4D -and $lb[1] -eq 0x5A) {
-                Unblock-File -Path $localVSCode -ErrorAction SilentlyContinue
-                Write-Log "[信息] 使用本地 VS Code 安装器（离线）: $localVSCode"
-                $installerPath = $localVSCode
-                $installerValid = $true
-            } else {
-                Write-Log '[警告] 本地 VS Code 安装器无效，改用在线下载' 'Yellow'
-            }
-        } catch {
-            Write-Log '[警告] 本地 VS Code 安装器读取失败，改用在线下载' 'Yellow'
-        }
-    }
-
     if (Test-Path $installerPath) {
         $item = Get-Item -LiteralPath $installerPath -ErrorAction SilentlyContinue
         if ($item -and $item.Length -gt 80MB) {
@@ -430,8 +419,6 @@ function Install-VSCode {
     # very silent + no restart + don't run after install + close applications
     $installLog = [System.IO.Path]::Combine($env:TEMP, 'vscode-install-log.log')
     try {
-        # 解除 Mark-of-the-Web，防止空白机 SmartScreen/Defender 拦截静默安装导致卡死
-        Unblock-File -Path $installerPath -ErrorAction SilentlyContinue
         $process = Start-Process -FilePath $installerPath -ArgumentList '/verysilent', '/norestart', '/mergetasks=!runcode', '/closeapplications', "/LOG=`"$installLog`"" -PassThru
         $finished = $process.WaitForExit(600000)
         if (-not $finished) {
@@ -460,11 +447,12 @@ function Install-VSCode {
     Write-Log '[成功] VS Code 安装完成'
 
     # 重新查找安装好的 VS Code
-    # 注意：$vscCandidates 由前文 userCandidates + systemCandidates 组成，
-    # 两者在此函数作用域内始终有效（未提前 return 即走到了新安装路径）
     Start-Sleep -Seconds 2
-    $vscCandidates = @($userCandidates) + @($systemCandidates)
-    foreach ($cand in $vscCandidates) {
+    $postInstallCandidates = @(
+        [System.IO.Path]::Combine($env:LOCALAPPDATA, 'Programs\Microsoft VS Code\Code.exe'),
+        [System.IO.Path]::Combine($env:USERPROFILE, 'AppData\Local\Programs\Microsoft VS Code\Code.exe')
+    )
+    foreach ($cand in $postInstallCandidates) {
         if (Test-RealVSCode -Path $cand) {
             $binDir = Split-Path -Parent $cand
             $cmdPath = [System.IO.Path]::Combine($binDir, 'bin\code.cmd')
@@ -511,12 +499,13 @@ function Install-VSCode-WithRetry {
     throw 'VS Code 安装多次失败，请检查网络后重试'
 }
 
-# ── 扩展白名单（Windows + MinGW 路线，仅 3 个）──
-# 说明：WSL 路线才需要 ms-vscode-remote.remote-wsl，本路线不装；
-#       ms-vscode.cpptools 也不在白名单——Windows 路线用 MinGW 的 gdb/gcc，无需 cpptools
+# ── 扩展白名单（唯一允许安装的扩展） ──
+# 注意：ms-vscode.cpptools 不在白名单中，因为它在 WSL 远端单独安装 linux-x64 版本
+# 如果在这里安装会拿到 Windows 二进制，导致 WSL 中报「二进制不兼容」
 $EXTENSION_WHITELIST = @(
     'continue.continue',
     'ms-ceintl.vscode-language-pack-zh-hans',
+    'ms-vscode-remote.remote-wsl',
     'formulahendry.code-runner'
 )
 
@@ -532,57 +521,7 @@ function Test-ExtensionInstalled {
     }
 }
 
-# 辅助：通过 code CLI 安装扩展，带 120s 超时保护（防止 marketplace 不可达时无限挂起）
-# 注意：参数必须以【数组】传入并用 @a 展开，否则 & $c $a 会把整串当作单个参数传给 code，导致安装静默失败。
-function Invoke-CodeInstall {
-    param([string]$CliCmd, [string[]]$Arguments)
-    # R1/R4 加固：显式指定目标用户 user-data-dir，确保扩展装到目标用户目录，
-    # 不受提权进程 SID 影响（否则跨账户 UAC 提权时扩展落到管理员账户，真实用户读不到→只能看代码）。
-    # $env:APPDATA 在本脚本开头已重定义为目标用户（见 73 行），故指向真实运行用户。
-    $userDataDir = Join-Path $env:APPDATA 'Code'
-    $allArgs = $Arguments + @("--user-data-dir=$userDataDir")
-    # (,$allArgs) 用一元逗号把数组包成单元素，避免 Start-Job -ArgumentList 把数组展平成多个 param
-    $job = Start-Job -ScriptBlock { param($c, $a) & $c @a 2>&1 } -ArgumentList $CliCmd, (, $allArgs)
-    if ($job | Wait-Job -Timeout 120) {
-        $null = Receive-Job $job -ErrorAction SilentlyContinue
-        Remove-Job $job -Force -ErrorAction SilentlyContinue
-    } else {
-        Stop-Job $job -ErrorAction SilentlyContinue
-        Remove-Job $job -Force -ErrorAction SilentlyContinue
-        throw 'code install timed out (120s)'
-    }
-}
-
-# 辅助：从国内镜像 open-vsx.org 下载扩展的 .vsix 到本地
-# 返回 $true 表示成功拿到有效 vsix（magic=PK），否则 $false
-function Get-OpenVsxVsix {
-    param([string]$ExtensionId, [string]$OutPath)
-    try {
-        $parts = $ExtensionId.Split('.')
-        if ($parts.Count -lt 2) { return $false }
-        $pub = $parts[0]; $name = $parts[1]
-        [Net.ServicePointManager]::SecurityProtocol = 'Tls12,Tls11,Tls'
-        $body = '{"filters":[{"criteria":[{"filterType":7,"value":"' + $ExtensionId + '"}]}],"flags":2151,"assetTypes":["Microsoft.VisualStudio.Code.Manifest","Microsoft.VisualStudio.Services.VSIXPackage"]}'
-        $r = Invoke-WebRequest -Uri 'https://open-vsx.org/vscode/gallery/extensionquery' -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 25 -UseBasicParsing -ErrorAction Stop
-        $j = $r.Content | ConvertFrom-Json
-        $ext = $j.results[0].extensions[0]
-        if ($ext -eq $null -or $ext.versions -eq $null -or $ext.versions.Count -eq 0) { return $false }
-        $ver = $ext.versions[0].version
-        if ([string]::IsNullOrEmpty($ver)) { return $false }
-        $dl = "https://open-vsx.org/vscode/gallery/publishers/$pub/vsextensions/$name/$ver/vspackage"
-        Invoke-WebRequest -Uri $dl -OutFile $OutPath -TimeoutSec 120 -MaximumRedirection 10 -UseBasicParsing -ErrorAction Stop
-        $bytes = [System.IO.File]::ReadAllBytes($OutPath)
-        if ($bytes.Length -gt 2 -and $bytes[0] -eq 80 -and $bytes[1] -eq 75) { return $true }
-        return $false
-    } catch {
-        return $false
-    }
-}
-
-# 1. 扩展安装：逐个安装。
-#    主路径：marketplace（code --install-extension，VS Code 自带 Node 客户端，国内通常可用）
-#    兜底路径：国内镜像 open-vsx.org 直链下载 .vsix 后本地安装（解决 marketplace 在部分国内网络被墙的问题）
-#    通过检查扩展目录真实存在来判定成功，不依赖退出码。
+# 1. 扩展安装：逐个安装，通过检查扩展目录判定成功，失败自动重试2次
 function Install-All-Extensions {
     param([string]$VSCodeCmd = 'code')
     Write-Log '[信息] 正在安装 VS Code 扩展...'
@@ -600,17 +539,60 @@ function Install-All-Extensions {
         }
     }
 
-    # 预检：code CLI 是否可用
+    Write-Log "[信息] CLI 路径: $cliCmd"
+
+    # ── VS Code warmup：首次安装后 CLI 可能未就绪，先启动一次让 VS Code 完成内部初始化 ──
+    $warmupNeeded = $false
     try {
         $codeVer = & $cliCmd --version 2>&1
         if ($LASTEXITCODE -ne 0) {
-            Write-Log "[警告] code CLI 不可用，扩展安装将跳过: $codeVer" 'WARNING'
+            Write-Log "[信息] code CLI 首次调用未就绪（退出码 $LASTEXITCODE），执行 warmup..." 'WARNING'
+            $warmupNeeded = $true
+        } else {
+            Write-Log "[信息] code CLI 就绪: $($codeVer[0])" 'INFO'
+        }
+    } catch {
+        Write-Log "[信息] code CLI 首次调用异常: $($_.Exception.Message)，执行 warmup..." 'WARNING'
+        $warmupNeeded = $true
+    }
+
+    if ($warmupNeeded) {
+        Write-Log '[信息] 正在启动 VS Code 进行内部初始化（3 秒后自动关闭）...' 'Cyan'
+        try {
+            $warmupProc = Start-Process -FilePath $cliCmd -ArgumentList '--version' -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+            if ($warmupProc) {
+                $warmupDone = $warmupProc.WaitForExit(15000)
+                if (-not $warmupDone) {
+                    Write-Log '[信息] warmup 超时，终止进程' 'Yellow'
+                    $warmupProc.Kill()
+                }
+            }
+        } catch {
+            Write-Log "[信息] warmup 进程启动失败: $($_.Exception.Message)" 'Yellow'
+        }
+
+        Start-Sleep -Seconds 2
+
+        # 关闭可能弹出的 VS Code 窗口
+        $codeProcs = @(Get-Process -Name 'Code' -ErrorAction SilentlyContinue)
+        if ($codeProcs.Count -gt 0) {
+            Write-Log "[信息] 关闭 warmup 打开的 VS Code 窗口..." 'Cyan'
+            & taskkill /F /IM Code.exe 2>&1 | Out-Null
+            Start-Sleep -Seconds 2
+        }
+
+        # 再次验证 CLI
+        try {
+            $codeVer = & $cliCmd --version 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "[警告] code CLI warmup 后仍不可用（退出码 $LASTEXITCODE），扩展安装将跳过" 'WARNING'
+                return $false
+            }
+            Write-Log "[信息] code CLI warmup 成功: $($codeVer[0])" 'INFO'
+        } catch {
+            Write-Log "[警告] code CLI warmup 后仍失败: $($_.Exception.Message)，扩展安装将跳过" 'WARNING'
             return $false
         }
-        Write-Log "[信息] code CLI 就绪: $($codeVer[0])" 'INFO'
-    } catch {
-        Write-Log "[警告] code CLI 调用失败，扩展安装将跳过: $($_.Exception.Message)" 'WARNING'
-        return $false
     }
 
     $extRoot = [System.IO.Path]::Combine($env:USERPROFILE, '.vscode', 'extensions')
@@ -620,68 +602,34 @@ function Install-All-Extensions {
 
     foreach ($extId in $EXTENSION_WHITELIST) {
         $installed = $false
-
-        # 本地优先：离线包场景，打包目录存在 <extId>.vsix 则直接离线安装，零网络
-        $localVsix = Join-Path $PROJECT_DIR ($extId + '.vsix')
-        if (Test-Path $localVsix) {
-            try {
-                Unblock-File -Path $localVsix -ErrorAction SilentlyContinue
-                Write-Log "[信息] 发现本地扩展包，离线安装: $extId"
-                Invoke-CodeInstall -CliCmd $cliCmd -Arguments @('--install-extension', $localVsix, '--force')
-                if (Test-ExtensionInstalled -ExtensionId $extId -ExtRoot $extRoot) {
-                    Write-Log "[成功] 本地扩展安装成功: $extId" 'Green'
-                    $installed = $true
-                } else {
-                    Write-Log '[警告] 本地扩展安装后校验失败，回退在线安装' 'Yellow'
-                }
-            } catch {
-                Write-Log '[警告] 本地扩展安装异常，回退在线安装' 'Yellow'
-            }
-        }
-        if ($installed) { continue }
-
-        # ── 主路径：marketplace（最多 3 次）──
         for ($attempt = 1; $attempt -le 3; $attempt++) {
             try {
-                Invoke-CodeInstall -CliCmd $cliCmd -Arguments @('--install-extension', $extId, '--force')
-            } catch {
-                # 超时或异常，忽略，后续通过目录存在性判定
-            }
-            Start-Sleep -Seconds 1
-            if (Test-ExtensionInstalled -ExtensionId $extId -ExtRoot $extRoot) {
-                Write-Log "  [成功] $extId (marketplace)" 'INFO'
-                $successCount++; $installed = $true; break
-            }
-            if ($attempt -lt 3) {
-                Write-Log "  [信息] ${extId} marketplace 第 $attempt 次未检测到，重试..." 'WARNING'
-                Start-Sleep -Seconds 2
-            }
-        }
-
-        # ── 兜底路径：国内镜像 open-vsx 直链下载 vsix 后本地安装 ──
-        if (-not $installed) {
-            Write-Log "  [信息] ${extId} 主路径失败，尝试国内镜像 open-vsx 兜底..." 'WARNING'
-            $tmpVsix = Join-Path $env:TEMP ($extId.Replace('.', '_') + '.vsix')
-            if (Get-OpenVsxVsix -ExtensionId $extId -OutPath $tmpVsix) {
-                try {
-                    Invoke-CodeInstall -CliCmd $cliCmd -Arguments @('--install-extension', $tmpVsix, '--force')
-                } catch {}
+                & $cliCmd --install-extension $extId --force 2>&1 | Out-Null
                 Start-Sleep -Seconds 1
-                if (Test-ExtensionInstalled -ExtensionId $extId -ExtRoot $extRoot) {
-                    Write-Log "  [成功] $extId (open-vsx 国内镜像)" 'INFO'
-                    $successCount++; $installed = $true
-                } else {
-                    Write-Log "  [错误] ${extId} (marketplace 与 open-vsx 本地安装均未成功)" 'ERROR'
-                    $errorLog += $extId
-                }
+            } catch {
+                # 忽略调用异常，后续通过目录存在性判定
+            }
+
+            # 不依赖退出码，通过检查扩展目录真实存在来判定成功
+            if (Test-ExtensionInstalled -ExtensionId $extId -ExtRoot $extRoot) {
+                Write-Log "  [成功] $extId" 'INFO'
+                $successCount++
+                $installed = $true
+                break
+            }
+
+            if ($attempt -lt 3) {
+                Write-Log "  [信息] ${extId} 第 $attempt 次未检测到，重试..." 'WARNING'
+                Start-Sleep -Seconds 2
             } else {
-                Write-Log "  [错误] ${extId} (marketplace 失败，且 open-vsx 无此扩展或不可达)" 'ERROR'
+                Write-Log "  [错误] ${extId} (3次均未检测到安装目录)" 'ERROR'
                 $errorLog += $extId
             }
-            if (Test-Path $tmpVsix) { Remove-Item $tmpVsix -Force -ErrorAction SilentlyContinue }
         }
 
-        if (-not $installed) { $failCount++ }
+        if (-not $installed) {
+            $failCount++
+        }
     }
 
     if ($errorLog.Count -gt 0) {
@@ -706,31 +654,56 @@ function Copy-SettingsJson {
 
     $srcPath = [System.IO.Path]::Combine($PROJECT_DIR, 'settings.json')
     if (-not (Test-Path -LiteralPath $srcPath)) {
-        throw "找不到源 settings.json: $srcPath"
+        Write-Log "[警告] 找不到源 settings.json: $srcPath，跳过" 'WARNING'
+        return $false
     }
 
     # VS Code 用户配置目录：%APPDATA%\Code\User\settings.json
     $targetDir = [System.IO.Path]::Combine($env:APPDATA, 'Code', 'User')
     $targetPath = [System.IO.Path]::Combine($targetDir, 'settings.json')
 
-    # 创建目录
-    if (-not (Test-Path $targetDir)) {
-        New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
-        Write-Log "[信息] 已创建目录: $targetDir"
+    # 创建目录（带权限修复）
+    try {
+        if (-not (Test-Path $targetDir)) {
+            New-Item -ItemType Directory -Path $targetDir -Force -ErrorAction Stop | Out-Null
+            Write-Log "[信息] 已创建目录: $targetDir"
+        }
+    } catch {
+        Write-Log "[警告] 创建目录失败: $($_.Exception.Message)，尝试 icacls 修复权限..." 'Yellow'
+        try {
+            $parentDir = [System.IO.Path]::Combine($env:APPDATA, 'Code')
+            if (-not (Test-Path $parentDir)) {
+                New-Item -ItemType Directory -Path $parentDir -Force | Out-Null
+            }
+            & icacls "`"$parentDir`"" /grant "`"$($env:USERNAME):(OI)(CI)F`"" /T 2>&1 | Out-Null
+            New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+            Write-Log "[信息] 权限修复后目录创建成功: $targetDir"
+        } catch {
+            Write-Log "[错误] 目录创建彻底失败: $($_.Exception.Message)，跳过 settings.json" 'ERROR'
+            return $false
+        }
     }
 
     # 备份已有配置
-    if (Test-Path -LiteralPath $targetPath) {
-        $backup = "$targetPath.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-        Copy-Item -LiteralPath $targetPath -Destination $backup -Force -ErrorAction Stop
-        Write-Log "[信息] 已备份现有配置到: $backup"
+    try {
+        if (Test-Path -LiteralPath $targetPath) {
+            $backup = "$targetPath.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+            Copy-Item -LiteralPath $targetPath -Destination $backup -Force -ErrorAction SilentlyContinue
+            Write-Log "[信息] 已备份现有配置到: $backup"
+        }
+    } catch {
+        Write-Log "[信息] 备份旧配置失败（不影响后续）: $($_.Exception.Message)" 'Yellow'
     }
 
-    # 纯搬运：直接复制，不修改任何字节
-    Copy-Item -LiteralPath $srcPath -Destination $targetPath -Force -ErrorAction Stop
-    Write-Log "[成功] settings.json 已复制到: $targetPath" 'INFO'
-
-    return $true
+    # 复制
+    try {
+        Copy-Item -LiteralPath $srcPath -Destination $targetPath -Force -ErrorAction Stop
+        Write-Log "[成功] settings.json 已复制到: $targetPath" 'INFO'
+        return $true
+    } catch {
+        Write-Log "[错误] settings.json 复制失败: $($_.Exception.Message)" 'ERROR'
+        return $false
+    }
 }
 
 # 2b. 写入 locale.json，确保中文语言包安装后 VS Code 首次启动就是中文界面
@@ -759,9 +732,21 @@ function Copy-ContinueConfig {
 
     $continueDir = [System.IO.Path]::Combine($env:USERPROFILE, '.continue')
 
-    if (-not (Test-Path $continueDir)) {
-        New-Item -ItemType Directory -Path $continueDir -Force | Out-Null
-        Write-Log "[信息] 已创建 Continue 目录: $continueDir"
+    try {
+        if (-not (Test-Path $continueDir)) {
+            New-Item -ItemType Directory -Path $continueDir -Force -ErrorAction Stop | Out-Null
+            Write-Log "[信息] 已创建 Continue 目录: $continueDir"
+        }
+    } catch {
+        Write-Log "[警告] 创建 Continue 目录失败: $($_.Exception.Message)，尝试 icacls 修复..." 'Yellow'
+        try {
+            & icacls "`"$continueDir`"" /grant "`"$($env:USERNAME):(OI)(CI)F`"" /T 2>&1 | Out-Null
+            New-Item -ItemType Directory -Path $continueDir -Force | Out-Null
+            Write-Log "[信息] 权限修复后目录创建成功: $continueDir"
+        } catch {
+            Write-Log "[错误] Continue 目录创建彻底失败: $($_.Exception.Message)" 'ERROR'
+            return $false
+        }
     }
 
     $allOk = $true
@@ -777,80 +762,27 @@ function Copy-ContinueConfig {
         }
 
         # 备份已有配置
-        if (Test-Path -LiteralPath $targetPath) {
-            $backup = "$targetPath.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-            Copy-Item -LiteralPath $targetPath -Destination $backup -Force -ErrorAction Stop
-            Write-Log "  [信息] 已备份 $cfgName 到: $backup"
+        try {
+            if (Test-Path -LiteralPath $targetPath) {
+                $backup = "$targetPath.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+                Copy-Item -LiteralPath $targetPath -Destination $backup -Force -ErrorAction SilentlyContinue
+                Write-Log "  [信息] 已备份 $cfgName 到: $backup"
+            }
+        } catch {
+            Write-Log "  [信息] 备份 $cfgName 失败（不影响后续）: $($_.Exception.Message)" 'Yellow'
         }
 
         # 复制
-        Copy-Item -LiteralPath $srcPath -Destination $targetPath -Force -ErrorAction Stop
-        Write-Log "  [成功] $cfgName 已复制到: $targetPath"
+        try {
+            Copy-Item -LiteralPath $srcPath -Destination $targetPath -Force -ErrorAction Stop
+            Write-Log "  [成功] $cfgName 已复制到: $targetPath"
+        } catch {
+            Write-Log "  [错误] $cfgName 复制失败: $($_.Exception.Message)" 'ERROR'
+            $allOk = $false
+        }
     }
 
     return $allOk
-}
-
-# 2c. 语言包自愈：确保中文语言包已安装且未被 VS Code 因版本不兼容而禁用。
-# 若被禁用（engines 不匹配当前 VS Code），则重装匹配版本，彻底杜绝“界面英文”问题。
-function Repair-LanguagePack {
-    param([string]$CliCmd, [string]$ExtRoot)
-    $extId = 'ms-ceintl.vscode-language-pack-zh-hans'
-    $extJson = Join-Path $ExtRoot 'extensions.json'
-    $disabled = $false
-    $disabledReason = ''
-    if (Test-Path -LiteralPath $extJson) {
-        try {
-            $j = Get-Content -LiteralPath $extJson -Raw -Encoding UTF8 | ConvertFrom-Json
-            foreach ($e in $j) {
-                if ($e.identifier -and $e.identifier.id -like "$extId*") {
-                    if ($e.disabled) {
-                        $disabled = $true
-                        $disabledReason = ($e.disabled | ConvertTo-Json -Compress)
-                    }
-                }
-            }
-        } catch {}
-    }
-    if (-not $disabled -and (Test-ExtensionInstalled -ExtensionId $extId -ExtRoot $ExtRoot)) {
-        Write-Log '[成功] 中文语言包已安装且启用（版本与 VS Code 兼容）' 'INFO'
-        return $true
-    }
-    if (-not $disabled) {
-        Write-Log '[警告] 未检测到中文语言包目录，尝试重新安装' 'WARNING'
-    } else {
-        Write-Log "[警告] 中文语言包被 VS Code 禁用（疑似版本不兼容）：$disabledReason" 'WARNING'
-        Write-Log '[信息] 尝试重新安装与当前 VS Code 版本匹配的语言包...' 'INFO'
-    }
-    # 主路径：marketplace 重装最新（通常与最新 VS Code 匹配）
-    for ($attempt = 1; $attempt -le 3; $attempt++) {
-        try { Invoke-CodeInstall -CliCmd $CliCmd -Arguments @('--install-extension', $extId, '--force') } catch {}
-        Start-Sleep -Seconds 1
-        $stillDisabled = $false
-        if (Test-Path -LiteralPath $extJson) {
-            try {
-                $j2 = Get-Content -LiteralPath $extJson -Raw -Encoding UTF8 | ConvertFrom-Json
-                foreach ($e2 in $j2) {
-                    if ($e2.identifier -and $e2.identifier.id -like "$extId*" -and $e2.disabled) { $stillDisabled = $true }
-                }
-            } catch {}
-        }
-        if ((Test-ExtensionInstalled -ExtensionId $extId -ExtRoot $ExtRoot) -and -not $stillDisabled) {
-            Write-Log '[成功] 中文语言包已重装并启用' 'INFO'
-            return $true
-        }
-        if ($attempt -lt 3) { Start-Sleep -Seconds 2 }
-    }
-    # 兜底：国内镜像 open-vsx 直链
-    $tmpVsix = Join-Path $env:TEMP ($extId.Replace('.', '_') + '.vsix')
-    if (Get-OpenVsxVsix -ExtensionId $extId -OutPath $tmpVsix) {
-        try { Invoke-CodeInstall -CliCmd $CliCmd -Arguments @('--install-extension', $tmpVsix, '--force') } catch {}
-        Start-Sleep -Seconds 1
-    }
-    if (Test-Path -LiteralPath $tmpVsix) { Remove-Item -LiteralPath $tmpVsix -Force -ErrorAction SilentlyContinue }
-    $ok = Test-ExtensionInstalled -ExtensionId $extId -ExtRoot $ExtRoot
-    if ($ok) { Write-Log '[成功] 中文语言包经国内镜像修复完成' 'INFO' } else { Write-Log '[错误] 中文语言包修复失败，界面可能为英文' 'ERROR' }
-    return $ok
 }
 
 # ── Main ──
@@ -861,22 +793,19 @@ function Main {
 
     # 验证返回的路径真实存在（防止返回无效路径导致后续扩展安装失败）
     if (-not $codeCmd -or -not (Test-Path -LiteralPath $codeCmd)) {
-        throw "VS Code 安装后路径无效或不存在: $codeCmd"
+        Write-Log "[错误] VS Code 安装后路径无效或不存在: $codeCmd" 'ERROR'
+        return @{ CodeCmd = $codeCmd; ExtSuccess = $false; ContinueSuccess = $false }
     }
     Write-Log "[成功] VS Code 路径验证通过" 'INFO'
 
     # Step 2: 安装白名单扩展（5个，逐个安装，60s超时，重试2次）
     $extSuccess = Install-All-Extensions -VSCodeCmd $codeCmd
 
-    # Step 2c: 语言包自愈（防版本不兼容导致英文界面）
-    $extRoot = [System.IO.Path]::Combine($env:USERPROFILE, '.vscode', 'extensions')
-    Repair-LanguagePack -CliCmd $codeCmd -ExtRoot $extRoot
-
     # Step 2b: 清理非白名单扩展
     Remove-NonWhitelistExtensions -VSCodeCmd $codeCmd
 
     # Step 3: 复制 settings.json 原封不动
-    Copy-SettingsJson
+    $settingsSuccess = Copy-SettingsJson
 
     # Step 3b: 写入 locale.json（VS Code 1.90+ 通过此文件决定显示语言）
     Write-LocaleJson
@@ -890,13 +819,29 @@ function Main {
         CodeCmd = $codeCmd
         ExtSuccess = $extSuccess
         ContinueSuccess = $continueSuccess
+        SettingsSuccess = $settingsSuccess
     }
 }
 
-# 直接执行，返回结果供 Setup-FlashTap.ps1 调用
-$mainResult = Main
-if (-not $mainResult.ExtSuccess) {
-    Write-Log '[警告] 部分扩展安装失败，请检查上方日志' 'WARNING'
+# ── 全局 try/catch：防止未处理异常导致退出码 1 ──
+try {
+    $mainResult = Main
+    if (-not $mainResult.ExtSuccess) {
+        Write-Log '[警告] 部分扩展安装失败，请检查上方日志' 'WARNING'
+    }
+    if (-not $mainResult.SettingsSuccess) {
+        Write-Log '[警告] settings.json 配置失败' 'WARNING'
+    }
+    if (-not $mainResult.ContinueSuccess) {
+        Write-Log '[警告] Continue 配置失败' 'WARNING'
+    }
+    if (-not $mainResult.ExtSuccess -and -not $mainResult.SettingsSuccess -and -not $mainResult.ContinueSuccess) {
+        Write-Log '[错误] VS Code 配置全部失败' 'ERROR'
+        exit 2
+    }
+    exit 0
+} catch {
+    Write-Log "[致命错误] install-vscode.ps1 未处理异常: $($_.Exception.Message)" 'ERROR'
+    Write-Log "[调试] 异常位置: $($_.InvocationInfo.PositionMessage)" 'ERROR'
     exit 2
 }
-exit 0

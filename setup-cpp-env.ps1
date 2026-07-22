@@ -1,264 +1,234 @@
-﻿# FlashTap: Windows 原生 C++ 编译环境自动配置（MinGW-w64 / GCC + GDB）
-#
-# 设计目标（针对编程新手）：
-#   - 不依赖 WSL、不安装十几 GB 的 Visual Studio。
-#   - 一键安装轻量级 MinGW-w64（GCC 编译器 + GDB 调试器），VS Code 按 F5 即可编译并调试，直接看到结果。
-#   - 本模块为【必装项】：任何失败都会明确报错并返回非 0，主安装流程因此中断并给出解决办法。
-#   - 具备幂等性：已装好的会跳过；支持本地离线包（把 mingw64.zip 放到项目目录即可，无需联网）。
-#
-# 可离线部署：将 MinGW-w64 压缩包命名为 mingw64.zip（或 mingw64.7z）放到项目目录或 tools\ 下，
-#            脚本会优先使用本地文件，完全不联网。
+﻿# FlashTap: C++ 编译环境自动配置
+# 优先级：系统 g++ > WSL发行版(自动安装编译工具) > 手动安装提示
+# 非强制模块：任何失败仅输出提示，绝不中断主安装流程
 
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
 
 $PROJECT_DIR = $PSScriptRoot
-if ([string]::IsNullOrEmpty($PROJECT_DIR)) { $PROJECT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path }
-if ([string]::IsNullOrEmpty($PROJECT_DIR)) { $PROJECT_DIR = (Get-Location).Path }
-
-$LOG_FILE   = Join-Path $PROJECT_DIR 'cpp-env.log'
-# 固定安装目录，便于加入 PATH 与日后查找；与桌面快捷方式、工作区保持一致
-$MINGW_DIR  = 'C:\FlashTap\mingw64'
-$BIN_DIR    = Join-Path $MINGW_DIR 'bin'
-$WORKSPACE  = 'C:\FlashTap\cpp-workspace'
-
-# ── 离线包候选（优先使用，无需联网）──
-$LOCAL_CANDIDATES = @(
-    (Join-Path $PROJECT_DIR 'mingw64.zip'),
-    (Join-Path $PROJECT_DIR 'mingw64.7z'),
-    (Join-Path $PROJECT_DIR 'tools\mingw64.zip'),
-    (Join-Path $PROJECT_DIR 'tools\mingw64.7z')
-)
-
-# ── 在线下载候选（失效时把离线包 mingw64.zip 放到项目目录即可）──
-# 版本：GCC 14.2.0 / win32 线程 / SEH 异常
-# 说明：winlibs 没有「win32-seh-ucrt」组合，win32 线程默认配 msvcrt；
-#       ucrt 运行时版本见 posix-ucrt 候选。两个都是可用的 MinGW-w64 工具链。
-$MINGW_BASE = 'https://github.com/brechtsanders/winlibs_mingw/releases/download'
-$MINGW_URLS_RAW = @(
-    "$MINGW_BASE/14.2.0win32-12.0.0-msvcrt-r1/winlibs-x86_64-win32-seh-gcc-14.2.0-mingw-w64msvcrt-12.0.0-r1.zip",
-    "$MINGW_BASE/14.2.0posix-12.0.0-ucrt-r3/winlibs-x86_64-posix-seh-gcc-14.2.0-mingw-w64ucrt-12.0.0-r3.zip",
-    "$MINGW_BASE/14.2.0win32-12.0.0-msvcrt-r1/winlibs-x86_64-win32-seh-gcc-14.2.0-mingw-w64msvcrt-12.0.0-r1.7z"
-)
-# 备用镜像：GitHub 直连不通时（如国内网络）走 ghproxy 代理
-$MINGW_URLS_MIRROR = $MINGW_URLS_RAW | ForEach-Object { 'https://ghproxy.net/' + $_ }
-$DOWNLOAD_URLS = $MINGW_URLS_RAW + $MINGW_URLS_MIRROR
+if ((-not $PROJECT_DIR) -or ($PROJECT_DIR -eq '')) {
+    $PROJECT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+if ((-not $PROJECT_DIR) -or ($PROJECT_DIR -eq '')) {
+    $PROJECT_DIR = (Get-Location).Path
+}
+$LOG_FILE = [System.IO.Path]::Combine($PROJECT_DIR, 'cpp-env.log')
+$DISTRO_FILE = [System.IO.Path]::Combine($PROJECT_DIR, '.wsl-distro-name')
 
 function Write-Log {
     param([string]$Msg, [string]$Clr)
     $ts = Get-Date -Format 'HH:mm:ss'
     $line = "[$ts] $Msg"
-    if ($Clr) { Write-Host "  $line" -ForegroundColor $Clr } else { Write-Host "  $line" }
+    if ($Clr) {
+        Write-Host "  $line" -ForegroundColor $Clr
+    } else {
+        Write-Host "  $line"
+    }
     try {
         $utf8 = New-Object System.Text.UTF8Encoding $true
         [System.IO.File]::AppendAllText($LOG_FILE, $line + [Environment]::NewLine, $utf8)
     } catch { }
 }
 
-function Get-LocalArchive {
-    foreach ($c in $LOCAL_CANDIDATES) {
-        if (Test-Path -LiteralPath $c) {
-            Write-Log "发现本地离线包: $c" 'Green'
-            return $c
-        }
-    }
-    return $null
-}
-
-function Get-FileWithRetry {
-    param([string[]]$Urls, [string]$OutFile)
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    # 继承系统代理（公司/校园网常见）
+function Test-GppOnPath {
+    $ErrorActionPreference = 'Stop'
     try {
-        $proxy = [System.Net.WebRequest]::GetSystemWebProxy()
-        $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
-        [System.Net.WebRequest]::DefaultWebProxy = $proxy
-    } catch { }
-
-    foreach ($u in $Urls) {
-        Write-Log "  尝试下载: $u" 'Cyan'
-        try {
-            # 关键：必须加超时，避免网络不可达时无限挂起（参考前文 Ollama 卡死教训）
-            Invoke-WebRequest -Uri $u -OutFile $OutFile -UseBasicParsing -TimeoutSec 120 -MaximumRedirection 5 -ErrorAction Stop
-            if ((Test-Path -LiteralPath $OutFile) -and ((Get-Item -LiteralPath $OutFile).Length -gt 1MB)) {
-                $mb = [math]::Round((Get-Item -LiteralPath $OutFile).Length / 1MB, 1)
-                Write-Log "  下载成功: $mb MB" 'Green'
-                return $true
-            }
-            Write-Log '  下载文件异常（大小不符），重试...' 'Yellow'
-        } catch {
-            Write-Log "  下载失败: $($_.Exception.Message)" 'Yellow'
-        }
-    }
-    return $false
-}
-
-function Expand-ArchiveRobust {
-    param([string]$Archive, [string]$Dest)
-    $ext = [System.IO.Path]::GetExtension($Archive).ToLower()
-    if (-not (Test-Path -LiteralPath $Dest)) { New-Item -ItemType Directory -Path $Dest -Force | Out-Null }
-
-    if ($ext -eq '.zip') {
-        try {
-            Expand-Archive -LiteralPath $Archive -DestinationPath $Dest -Force -ErrorAction Stop
-            return $true
-        } catch {
-            Write-Log "  ZIP 解压失败: $($_.Exception.Message)" 'Yellow'
-            return $false
-        }
-    }
-    if ($ext -eq '.7z') {
-        # 优先用系统自带 tar.exe（Win10+ 通常支持 7z 读取）
-        try {
-            & tar.exe -xf $Archive -C $Dest 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) { return $true }
-        } catch { }
-        # 退而求其次用 7z.exe（若已安装）
-        $sevenZip = $null
-        try { $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source } catch {}
-        if ($sevenZip) {
-            & $sevenZip x -y -o"$Dest" "$Archive" 2>&1 | Out-Null
-            return ($LASTEXITCODE -eq 0)
-        }
-        Write-Log '  .7z 解压失败：系统缺少 tar/7z，请改用 .zip 离线包' 'Yellow'
+        $null = Get-Command g++.exe -ErrorAction Stop
+    } catch {
+        $ErrorActionPreference = 'SilentlyContinue'
         return $false
     }
-    Write-Log "  不支持的压缩格式: $ext" 'Yellow'
+    $ErrorActionPreference = 'SilentlyContinue'
+    $raw = & g++ --version 2>&1
+    $ver = ''
+    if ($raw) {
+        $lines = @("$raw" -split [Environment]::NewLine)
+        if ($lines.Count -gt 0) { $ver = $lines[0].Trim() }
+    }
+    if ($ver -eq '') { $ver = '未知版本' }
+    Write-Log "系统已安装 g++: $ver" 'Green'
+    return $true
+}
+
+function Test-WslExe {
+    try {
+        $null = Get-Command wsl.exe -ErrorAction Stop
+    } catch {
+        return $false
+    }
+    # wsl.exe 存在不代表 WSL 功能已启用，必须实测 --status
+    try {
+        $null = & wsl.exe --status 2>$null 1>$null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
+
+function Get-WslDistros {
+    if (-not (Test-WslExe)) { return @() }
+    $ErrorActionPreference = 'SilentlyContinue'
+    $raw = & wsl.exe --list --quiet 2>$null
+    $result = [System.Collections.Generic.List[string]]::new()
+    if ($raw) {
+        if ($raw -isnot [array]) {
+            $raw = @($raw)
+        }
+        foreach ($line in $raw) {
+            $t = [string]$line
+            $t = $t.Trim() -replace "`0", ''
+            if ($t.Length -gt 0) {
+                [void]$result.Add($t)
+            }
+        }
+    }
+    return ,$result.ToArray()
+}
+
+function Test-WslGpp {
+    param([string]$Distro)
+    $ErrorActionPreference = 'SilentlyContinue'
+    $out = & wsl.exe -d $Distro -u root -- which g++ 2>&1
+    if ($out) {
+        $path = "$out".Trim()
+        if ($path -ne '') {
+            Write-Log "WSL ($Distro) 已安装 g++: $path"
+            return $true
+        }
+    }
     return $false
 }
 
-function Add-ToUserPath {
-    param([string]$Dir)
+function Install-WslBuildTools {
+    param([string]$Distro)
+
+    Write-Log "正在 WSL ($Distro) 中安装 C++ 编译工具链，请稍候..."
+    Write-Log '  将安装: gcc g++ cmake build-essential gdb'
+
     try {
-        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-        if ([string]::IsNullOrEmpty($userPath)) { $userPath = '' }
-        if ($userPath -notmatch [regex]::Escape($Dir)) {
-            if ($userPath.EndsWith(';')) { $userPath = $userPath + $Dir }
-            else { $userPath = "$userPath;$Dir" }
-            [Environment]::SetEnvironmentVariable('Path', $userPath, 'User')
-            Write-Log "  已将 $Dir 加入用户 PATH" 'Green'
-        } else {
-            Write-Log '  PATH 已包含 MinGW，跳过' 'Green'
-        }
-        # 同步到当前进程，便于本次验证
-        if ($env:Path -notmatch [regex]::Escape($Dir)) { $env:Path = "$env:Path;$Dir" }
-    } catch {
-        Write-Log "  加入 PATH 失败（仍需手动添加）: $($_.Exception.Message)" 'Yellow'
-    }
-}
+        $ErrorActionPreference = 'SilentlyContinue'
 
-function Protect-Dir {
-    param([string]$Dir)
-    # 尽力而为：加 Windows Defender 排除，避免 g++.exe 被误删（360/Defender 友好）
-    try { Add-MpPreference -ExclusionPath $Dir -ErrorAction SilentlyContinue } catch { }
-}
+        Write-Log '  [1/2] 正在执行 sudo apt update...'
+        $null = & wsl.exe -d $Distro -u root -- bash -c 'DEBIAN_FRONTEND=noninteractive apt update -y 2>&1'
 
-function Install-CpptoolsExtension {
-    # 将 C/C++ 扩展装入“原生 VS Code”（按 F5 调试必需），尽力而为
-    $cands = @(
-        (Join-Path $env:LOCALAPPDATA 'Programs\Microsoft VS Code\Code.exe'),
-        (Join-Path ${env:ProgramFiles} 'Microsoft VS Code\Code.exe'),
-        (Join-Path ([Environment]::GetEnvironmentVariable("ProgramFiles(x86)")) 'Microsoft VS Code\Code.exe')
-    )
-    $codeExe = $null
-    foreach ($c in $cands) { if (Test-Path -LiteralPath $c) { $codeExe = $c; break } }
-    if (-not $codeExe) {
-        Write-Log '  未找到 VS Code，跳过 C/C++ 扩展安装（请确认第二步已成功）' 'Yellow'
-        return
-    }
-    try {
-        Write-Log '  正在为 VS Code 安装 C/C++ 扩展 (ms-vscode.cpptools)...' 'Cyan'
-        $codeCmd = Join-Path (Split-Path -Parent $codeExe) 'bin\code.cmd'
-        if (-not (Test-Path -LiteralPath $codeCmd)) { $codeCmd = Join-Path (Split-Path -Parent $codeExe) 'code.cmd' }
-        $installer = if (Test-Path -LiteralPath $codeCmd) { $codeCmd } else { $codeExe }
-        
-        # 用 System.Diagnostics.Process 带超时启动，避免 code CLI 因网络波动无限挂死
-        # （code --install-extension 会在后台启动 VS Code Server，若连不上 marketplace 可能永不返回）
-        $pinfo = New-Object System.Diagnostics.ProcessStartInfo
-        $pinfo.FileName = $installer
-        $pinfo.Arguments = '--install-extension ms-vscode.cpptools --force'
-        $pinfo.UseShellExecute = $false
-        $pinfo.RedirectStandardOutput = $true
-        $pinfo.RedirectStandardError = $true
-        $pinfo.CreateNoWindow = $true
-        $pinfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
-        $pinfo.StandardErrorEncoding  = [System.Text.Encoding]::UTF8
+        Write-Log '  [2/2] 正在执行 apt install gcc g++ cmake build-essential gdb...'
+        $null = & wsl.exe -d $Distro -u root -- bash -c 'DEBIAN_FRONTEND=noninteractive apt install -y gcc g++ cmake build-essential gdb 2>&1'
 
-        $process = [System.Diagnostics.Process]::Start($pinfo)
-        $started = [DateTime]::Now
-        Write-Log "  等待 code --install-extension（最多 90 秒）..." 'Cyan'
-        if ($process.WaitForExit(90000)) {
-            # 正常完成
-            $stdout = $process.StandardOutput.ReadToEnd()
-            $stderr = $process.StandardError.ReadToEnd()
-            if ($process.ExitCode -eq 0) {
-                Write-Log '  C/C++ 扩展安装成功' 'Green'
-            } else {
-                Write-Log "  C/C++ 扩展安装返回非零退出码: $($process.ExitCode)，可能仍需手动安装" 'Yellow'
-            }
-        } else {
-            # 超时：强制结束，避免阻塞主流程
-            Write-Log '  扩展安装超时（90秒），强制结束，继续后续步骤' 'Yellow'
-            try { $process.Kill() } catch {}
-            Write-Log '  提示：安装完成后可在 VS Code 扩展商店手动搜索 ms-vscode.cpptools 安装' 'Yellow'
-        }
-    } catch {
-        Write-Log "  C/C++ 扩展安装异常（可稍后在扩展商店手动安装）: $($_.Exception.Message)" 'Yellow'
-    }
-}
-
-function Write-NativeConfig {
-    # 在工作区写入 Windows 原生的 launch.json / tasks.json / 示例 main.cpp
-    try {
-        $vscDir = Join-Path $WORKSPACE '.vscode'
-        if (-not (Test-Path -LiteralPath $vscDir)) { New-Item -ItemType Directory -Path $vscDir -Force | Out-Null }
-        if (-not (Test-Path -LiteralPath $WORKSPACE)) { New-Item -ItemType Directory -Path $WORKSPACE -Force | Out-Null }
-
-        $launchJson = @'
-{
-    "version": "0.2.0",
-    "configurations": [
-        {
-            "name": "g++ 调试运行",
-            "type": "cppdbg",
-            "request": "launch",
-            "program": "${fileDirname}\\${fileBasenameNoExtension}.exe",
-            "args": [],
-            "stopAtEntry": false,
-            "cwd": "${fileDirname}",
-            "environment": [],
-            "externalConsole": false,
-            "MIMode": "gdb",
-            "miDebuggerPath": "C:\\FlashTap\\mingw64\\bin\\gdb.exe",
-            "setupCommands": [
-                {
-                    "description": "为 gdb 启用整齐打印",
-                    "text": "-enable-pretty-printing",
-                    "ignoreFailures": true
-                }
-            ],
-            "preLaunchTask": "C/C++: g++ 生成活动文件",
-            "logging": {
-                "engineLogging": false
+        Write-Log '  验证 g++ 安装结果...'
+        $verOut = & wsl.exe -d $Distro -u root -- bash -c 'g++ --version 2>&1'
+        if ($verOut) {
+            $verLine = @("$verOut" -split [Environment]::NewLine)
+            if ($verLine.Count -gt 0) {
+                Write-Log "  WSL g++: $($verLine[0].Trim())" 'Green'
             }
         }
-    ]
+    } catch {
+        Write-Log "  安装异常: $($_.Exception.Message)" 'Yellow'
+        return $false
+    }
+
+    $ErrorActionPreference = 'SilentlyContinue'
+    return $true
 }
-'@
+
+function Try-AutoInstallDistro {
+    Write-Log '未检测到 Linux 发行版，正在尝试静默安装 Ubuntu...'
+    Write-Log '  下载约 500MB，预计 1-3 分钟，请耐心等待...'
+
+    try {
+        $ErrorActionPreference = 'SilentlyContinue'
+
+        Write-Log '  启动安装进程（后台静默模式）...'
+
+        $proc = Start-Process -FilePath wsl.exe -ArgumentList '--install -d Ubuntu' `
+            -NoNewWindow -PassThru -WindowStyle Hidden
+
+        $maxWaitSec = 180
+        $pollIntervalSec = 5
+        $elapsed = 0
+
+        while ($elapsed -lt $maxWaitSec) {
+            Start-Sleep -Seconds $pollIntervalSec
+            $elapsed += $pollIntervalSec
+
+            if ($proc.HasExited) {
+                Write-Log "  安装进程已退出 (exit code: $($proc.ExitCode))"
+                break
+            }
+
+            $distros = Get-WslDistros
+            if ($distros.Count -gt 0) {
+                Write-Log '  发行版已安装，终止安装助手界面...'
+                try {
+                    $proc.Kill()
+                } catch { }
+                Start-Sleep -Seconds 2
+                $ErrorActionPreference = 'SilentlyContinue'
+                return $true
+            }
+
+            if ($elapsed % 15 -eq 0) {
+                Write-Log "  仍在下载中... (已等待 $elapsed 秒)"
+            }
+        }
+
+        if (-not $proc.HasExited) {
+            Write-Log "  安装超时 (${maxWaitSec}秒)，终止进程..."
+            try {
+                $proc.Kill()
+            } catch { }
+        }
+
+        $distros = Get-WslDistros
+        if ($distros.Count -gt 0) {
+            Write-Log "  发行版已可用: $($distros -join ', ')" 'Green'
+            return $true
+        }
+
+        Write-Log '  安装未在预期时间内完成，发行版未就绪' 'Yellow'
+        Write-Log '  可能原因：网络较慢或需管理员权限' 'Yellow'
+        Write-Log '  请重新以管理员身份运行本脚本，或手动执行:' 'Yellow'
+        Write-Log '    wsl --install -d Ubuntu' 'Yellow'
+        return $false
+    } catch {
+        Write-Log "  自动安装异常: $($_.Exception.Message)" 'Yellow'
+        return $false
+    }
+
+    $ErrorActionPreference = 'SilentlyContinue'
+    return $false
+}
+
+function Setup-WslDevEnv {
+    param([string]$Distro)
+
+    Write-Log "正在 WSL ($Distro) 中配置 C++ 开发模板..."
+
+    try {
+        $ErrorActionPreference = 'SilentlyContinue'
+
+        $wsDir = '/home/lc-cpp-workspace'
+        $vscDir = "$wsDir/.vscode"
+
+        Write-Log '  创建工作目录...'
+        $null = & wsl.exe -d $Distro -u root -- bash -c "mkdir -p $vscDir 2>&1"
+
         $tasksJson = @'
 {
     "version": "2.0.0",
     "tasks": [
         {
-            "type": "process",
+            "type": "shell",
             "label": "C/C++: g++ 生成活动文件",
-            "command": "C:\\FlashTap\\mingw64\\bin\\g++.exe",
+            "command": "/usr/bin/g++",
             "args": [
                 "-g",
                 "${file}",
                 "-o",
-                "${fileDirname}\\${fileBasenameNoExtension}.exe",
-                "-std=c++17"
+                "${fileDirname}/${fileBasenameNoExtension}",
+                "-std=c++11",
+                "-lcurl",
+                "-pthread"
             ],
             "options": {
                 "cwd": "${fileDirname}"
@@ -273,11 +243,49 @@ function Write-NativeConfig {
             "presentation": {
                 "reveal": "silent"
             },
-            "detail": "compiler: g++.exe (MinGW-w64)"
+            "detail": "compiler: /usr/bin/g++"
         }
     ]
 }
 '@
+
+$launchJson = @'
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "g++ 调试运行",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${fileDirname}/${fileBasenameNoExtension}",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${fileDirname}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "miDebuggerPath": "/usr/bin/gdb",
+            "setupCommands": [
+                {
+                    "description": "为 gdb 启用整齐打印",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                },
+                {
+                    "description": "将反汇编风格设置为 Intel",
+                    "text": "-gdb-set disassembly-flavor intel",
+                    "ignoreFailures": true
+                }
+            ],
+            "preLaunchTask": "C/C++: g++ 生成活动文件",
+            "logging": {
+                "engineLogging": false
+            }
+        }
+    ]
+}
+'@
+
         $mainCpp = @'
 #include <iostream>
 #include <vector>
@@ -286,7 +294,7 @@ function Write-NativeConfig {
 int main() {
     std::vector<std::string> msg = {
         "Hello, FlashTap!",
-        "C++ build environment: MinGW-w64 (Windows native)",
+        "C++ build environment: g++ (WSL)",
         "Press F5 to build and debug."
     };
 
@@ -297,105 +305,166 @@ int main() {
     return 0;
 }
 '@
-        $utf8noBom = New-Object System.Text.UTF8Encoding $false
-        [System.IO.File]::WriteAllText((Join-Path $vscDir 'launch.json'), $launchJson, $utf8noBom)
-        [System.IO.File]::WriteAllText((Join-Path $vscDir 'tasks.json'),  $tasksJson,  $utf8noBom)
-        [System.IO.File]::WriteAllText((Join-Path $WORKSPACE 'main.cpp'),  $mainCpp,    $utf8noBom)
-        Write-Log '  已写入 F5 调试配置 (launch.json/tasks.json) 与示例 main.cpp' 'Green'
-    } catch {
-        Write-Log "  写入调试配置失败: $($_.Exception.Message)" 'Yellow'
+
+        $tasksB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($tasksJson))
+        $launchB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($launchJson))
+        $mainB64   = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($mainCpp))
+
+        Write-Log '  写入 tasks.json (编译任务)...'
+        $null = & wsl.exe -d $Distro -u root -- bash -c "echo '$tasksB64' | base64 -d > $vscDir/tasks.json"
+
+        Write-Log '  写入 launch.json (调试配置)...'
+        $null = & wsl.exe -d $Distro -u root -- bash -c "echo '$launchB64' | base64 -d > $vscDir/launch.json"
+
+        Write-Log '  写入 main.cpp (示例代码)...'
+        $null = & wsl.exe -d $Distro -u root -- bash -c "echo '$mainB64' | base64 -d > $wsDir/main.cpp"
+
+        Write-Log '  修正文件权限...'
+        $null = & wsl.exe -d $Distro -u root -- bash -c "chown -R 1000:1000 $wsDir 2>&1; chmod -R 755 $wsDir 2>&1"
+
+        Write-Log '  创建 VS Code 工作区文件 (自动连接 WSL)...'
+        $workspaceJson = @"
+{
+    "folders": [
+        {
+            "uri": "vscode-remote://wsl+$Distro/home/lc-cpp-workspace",
+            "name": "FlashTap C++ (WSL)"
+        }
+    ],
+    "settings": {
+        "remote.autoForwardPorts": false,
+        "terminal.integrated.defaultProfile.linux": "bash"
+    },
+    "extensions": {
+        "recommendations": [
+            "ms-vscode.cpptools",
+            "ms-vscode.cpptools-extension-pack"
+        ]
     }
 }
+"@
+        $workspaceFile = [System.IO.Path]::Combine($PROJECT_DIR, 'FlashTap-CPP.code-workspace')
+        $utf8noBom = New-Object System.Text.UTF8Encoding $false
+        [System.IO.File]::WriteAllText($workspaceFile, $workspaceJson, $utf8noBom)
 
-function Test-GppReady {
-    try {
-        $gpp = Join-Path $BIN_DIR 'g++.exe'
-        if (-not (Test-Path -LiteralPath $gpp)) { return $false }
-        # 必须用绝对路径 $gpp 调用：首次安装时 mingw 尚未加入 PATH，
-        # 若用 `& g++.exe`（依赖 PATH）会因找不到命令而抛异常，误判为“未安装”。
-        $raw = & $gpp --version 2>&1
-        $ver = @("$raw" -split [Environment]::NewLine) | Where-Object { $_.Trim() -ne '' } | Select-Object -First 1
-        if ($ver) { Write-Log "  检测到 g++: $($ver.Trim())" 'Green' }
-        return $true
+        Write-Log '  C++ 开发模板配置完成' 'Green'
     } catch {
+        Write-Log "  开发模板配置异常: $($_.Exception.Message)" 'Yellow'
         return $false
     }
+
+    $ErrorActionPreference = 'SilentlyContinue'
+    return $true
+}
+
+function Initialize-WslUser {
+    param([string]$Distro)
+
+    Write-Log "正在初始化 WSL ($Distro) 用户环境..."
+
+    try {
+        $ErrorActionPreference = 'SilentlyContinue'
+
+        $userName = & wsl.exe -d $Distro -u root -- bash -c 'id -un 1000 2>/dev/null || echo ""' 2>&1
+        $userName = ($userName -join '').Trim()
+
+        if ($userName -eq '') {
+            Write-Log '  未检测到普通用户，正在创建默认用户: localcoder'
+            $null = & wsl.exe -d $Distro -u root -- bash -c 'useradd -m -s /bin/bash localcoder 2>&1'
+            $null = & wsl.exe -d $Distro -u root -- bash -c 'passwd -d localcoder 2>&1'
+            $userName = 'localcoder'
+        } else {
+            Write-Log "  检测到已有用户: $userName"
+        }
+
+        $null = & wsl.exe -d $Distro -u root -- bash -c "printf '[user]\ndefault=%s\n' '$userName' > /etc/wsl.conf"
+        Write-Log "  已配置 /etc/wsl.conf 默认用户: $userName"
+
+        $null = & wsl.exe --terminate $Distro 2>&1
+        Start-Sleep 2
+        Write-Log '  WSL 用户环境初始化完成' 'Green'
+    } catch {
+        Write-Log "  用户初始化异常: $($_.Exception.Message)" 'Yellow'
+        return $false
+    }
+
+    $ErrorActionPreference = 'SilentlyContinue'
+    return $true
 }
 
 function Main {
-    Write-Log '=== 检测 / 安装 Windows 原生 C++ 编译环境 (MinGW-w64) ==='
+    Write-Log '=== 检测 C++ 编译环境 ==='
 
-    # 1) 已安装则跳过下载，仅确保 PATH 与配置
-    if (Test-GppReady) {
-        Write-Log 'C++ 编译环境已就绪 (MinGW-w64 g++)' 'Green'
-        Add-ToUserPath -Dir $BIN_DIR
-        Protect-Dir -Dir $MINGW_DIR
-        Write-NativeConfig
-        Install-CpptoolsExtension
+    if (Test-GppOnPath) {
+        Write-Log 'C++ 编译环境已就绪 (系统 g++)' 'Green'
         return 0
     }
 
-    # 2) 取得压缩包：本地优先，否则联网下载
-    $archive = Get-LocalArchive
-    if (-not $archive) {
-        Write-Log '未找到本地离线包，开始联网下载 MinGW-w64...' 'Cyan'
-        $tmpArchive = Join-Path $env:TEMP "flashtap-mingw-$(Get-Date -Format 'yyyyMMddHHmmss').zip"
-        if (Get-FileWithRetry -Urls $DOWNLOAD_URLS -OutFile $tmpArchive) {
-            $archive = $tmpArchive
+    if (-not (Test-WslExe)) {
+        Write-Log '系统未安装 WSL，C++ 编译环境未配置' 'Yellow'
+        Write-Log '------------------------------------------------------------' 'Cyan'
+        Write-Log '  请按以下步骤手动安装 WSL + Ubuntu：' 'Cyan'
+        Write-Log '  1. 右键开始菜单，选择 Windows PowerShell (管理员)' 'Cyan'
+        Write-Log '  2. 执行命令: wsl --install' 'Cyan'
+        Write-Log '  3. 安装完成后重启电脑' 'Cyan'
+        Write-Log '  4. 重新运行本脚本，将自动安装 gcc/g++/cmake/gdb' 'Cyan'
+        Write-Log '------------------------------------------------------------' 'Cyan'
+        return 1
+    }
+
+    $distros = Get-WslDistros
+    if ($distros.Count -eq 0) {
+        Write-Log 'WSL 已启用但未安装 Linux 发行版' 'Yellow'
+
+        $autoOk = Try-AutoInstallDistro
+        if (-not $autoOk) {
+            Write-Log 'C++ 编译环境未配置，可重启电脑后重试' 'Yellow'
+            return 1
+        }
+
+        $distros = Get-WslDistros
+        if ($distros.Count -eq 0) {
+            Write-Log '发行版安装未生效，C++ 编译环境未配置' 'Yellow'
+            return 1
         }
     }
 
-    if (-not $archive -or -not (Test-Path -LiteralPath $archive)) {
-        Write-Log '无法获取 MinGW-w64 压缩包（离线包缺失且下载失败）。' 'Red'
-        Write-Log "解决办法：手动下载 mingw64.zip 放到 FlashTap 目录，重新运行本脚本。" 'Yellow'
-        return 1
+    Write-Log "检测到 WSL 发行版: $($distros -join ', ')"
+    $targetDistro = [string]($distros | Select-Object -First 1)
+    Write-Log "使用发行版: $targetDistro"
+
+    if (Test-WslGpp -Distro $targetDistro) {
+        Write-Log 'C++ 编译环境已就绪 (WSL g++)' 'Green'
+        Setup-WslDevEnv -Distro $targetDistro
+        Initialize-WslUser -Distro $targetDistro
+        try {
+            Set-Content -Path $DISTRO_FILE -Value $targetDistro -Encoding UTF8 -ErrorAction SilentlyContinue
+        } catch { }
+        return 0
     }
 
-    # 去除网盘/浏览器下载带来的 Mark-of-the-Web，避免 Defender 拦截解压出的 exe/dll
-    try { Unblock-File -Path $archive -ErrorAction SilentlyContinue } catch {}
+    Write-Log "WSL ($targetDistro) 中未安装 g++，正在自动安装编译工具..."
+    $installOk = Install-WslBuildTools -Distro $targetDistro
 
-    # 3) 解压到 C:\FlashTap（压缩包根目录为 mingw64\）
-    Write-Log "正在解压 MinGW-w64 到 $MINGW_DIR ..." 'Cyan'
-    $parent = Split-Path -Parent $MINGW_DIR
-    if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-    # 若已存在旧目录先备份移除，避免残留
-    if (Test-Path -LiteralPath $MINGW_DIR) {
-        try { Remove-Item -LiteralPath $MINGW_DIR -Recurse -Force -ErrorAction Stop } catch { Write-Log '  旧目录清理失败，尝试覆盖解压' 'Yellow' }
-    }
-    if (-not (Expand-ArchiveRobust -Archive $archive -Dest $parent)) {
-        Write-Log 'MinGW-w64 解压失败。' 'Red'
-        Write-Log "请确认压缩包完整，或换用 .zip 格式离线包放到 FlashTap 目录后重试。" 'Yellow'
-        return 1
+    if ($installOk -and (Test-WslGpp -Distro $targetDistro)) {
+        Write-Log 'C++ 编译环境安装完成 (WSL) - gcc g++ cmake gdb 已全部就绪' 'Green'
+        Setup-WslDevEnv -Distro $targetDistro
+        Initialize-WslUser -Distro $targetDistro
+        try {
+            Set-Content -Path $DISTRO_FILE -Value $targetDistro -Encoding UTF8 -ErrorAction SilentlyContinue
+        } catch { }
+        return 0
     }
 
-    # 4) 校验编译器
-    if (-not (Test-GppReady)) {
-        Write-Log '解压后未找到 g++.exe，安装失败。' 'Red'
-        return 1
-    }
-
-    # 5) 加入 PATH + 杀软排除 + 写配置 + 装扩展
-    Add-ToUserPath -Dir $BIN_DIR
-    Protect-Dir -Dir $MINGW_DIR
-    Write-NativeConfig
-    Install-CpptoolsExtension
-
-    # 6) 验证 GDB（调试必需）
-    try {
-        $gdbRaw = & gdb.exe --version 2>&1
-        $gdbVer = @("$gdbRaw" -split [Environment]::NewLine) | Where-Object { $_.Trim() -ne '' } | Select-Object -First 1
-        if ($gdbVer) { Write-Log "GDB 已就绪: $($gdbVer.Trim())" 'Green' }
-    } catch {
-        Write-Log 'GDB 未检测到（F5 调试可能不可用），请检查安装。' 'Yellow'
-    }
-
-    Write-Log 'C++ 编译环境安装完成 (MinGW-w64: gcc/g++/gdb)' 'Green'
-    return 0
+    Write-Log 'C++ 编译工具安装可能未完全成功，请检查网络连接后重试' 'Yellow'
+    Write-Log "手动验证: wsl -d $targetDistro -- g++ --version" 'Yellow'
+    return 1
 }
 
 try {
+    $ErrorActionPreference = 'SilentlyContinue'
     exit (Main)
 } catch {
-    Write-Log "C++ 环境配置失败 (异常): $($_.Exception.Message)" 'Red'
-    exit 1
+    Write-Log "C++ 环境配置已跳过 (错误): $($_.Exception.Message)" 'Yellow'
+    exit 0
 }
