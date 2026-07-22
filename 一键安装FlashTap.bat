@@ -1,77 +1,62 @@
 @echo off
-chcp 65001 >nul 2>&1
 cd /d "%~dp0"
-title FlashTap - One-Click Install
+title FlashTap Installer
 
-echo =============================================
-echo   FlashTap - AI Programming Assistant
-echo   One-Click Install
-echo =============================================
-echo.
-echo [INFO] This installation takes 10-20 minutes
-echo [INFO] Fully automatic, please do not close this window
-echo [TIP] To copy log: select text, press Enter to copy
-echo      After copying, press Enter again to resume
-echo.
+REM Unblock all files (Mark-of-the-Web from GitHub ZIP / browser download)
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem '%~dp0' -Recurse -File | Unblock-File -ErrorAction SilentlyContinue" >nul 2>&1
 
-rem ============================================================
-rem 统一入口：必须右键"以管理员方式运行"
-rem 不再自动 UAC 提权（避免 VM 共享文件夹路径硬编码、跨用户上下文丢失）
-rem ============================================================
-net session >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [ERROR] 没有管理员权限！
+REM Detect admin rights (dual method for Win10/Win11 compatibility)
+set ADMIN=0
+net session >nul 2>&1 && set ADMIN=1
+if %ADMIN%==0 whoami /groups 2>nul | findstr /i "S-1-16-12288" >nul 2>&1 && set ADMIN=1
+
+if %ADMIN%==0 (
+    echo =============================================
+    echo   FlashTap - ERROR
+    echo =============================================
     echo.
-    echo [操作指引]
-    echo   - 关闭此窗口
-    echo   - 找到 一键安装FlashTap.bat
-    echo   - 右键点击 → "以管理员方式运行"
-    echo   - 在弹出的 UAC 窗口中点"是"
+    echo No administrator privileges detected.
     echo.
-    echo   （右键以管理员运行 = 当前用户 + 管理员权限，
-    echo    不会丢失用户上下文，VS Code 扩展/配置会装到正确目录）
+    echo HOW TO FIX:
+    echo   1. Close this window
+    echo   2. Right-click this BAT file
+    echo   3. Select "Run as Administrator"
+    echo   4. Click "Yes" in UAC dialog
     echo.
-    echo 此窗口将在 10 秒后自动关闭...
+    echo This window will close in 10 seconds...
     timeout /t 10 >nul
     exit /b 1
 )
 
-echo [SUCCESS] 管理员权限已确认
-echo [INFO] 当前用户: %USERNAME% (可直接安装软件/写注册表/配环境变量)
-echo [INFO] 用户目录: %USERPROFILE%
+echo =============================================
+echo   FlashTap - Installing...
+echo =============================================
+echo.
+echo Admin OK. User: %USERNAME%
+echo Installing to: %USERPROFILE%
 echo.
 
-echo [INFO] Launching main installer...
-echo [INFO] 这是【主安装终端】，所有日志都会在这里滚动，请勿关闭。
-echo.
-
-rem 切换到脚本目录（管理员运行后工作目录可能是 System32，必须切回来）
-cd /d "%~dp0"
-echo [INFO] 脚本目录: %CD%
-echo.
-
-echo [INFO] Running network pre-flight check (a few seconds)...
+echo Running pre-flight check...
 powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0preflight-check.ps1"
 echo.
 
-rem 主安装脚本以当前用户身份+管理员权限运行，无需传递 OriginalUser 参数
+echo Running main installer...
 powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Setup-FlashTap.ps1"
-set INSTALL_RC=%errorlevel%
+set RC=%errorlevel%
 
 echo.
-if %INSTALL_RC% neq 0 (
+if %RC% neq 0 (
     echo =============================================
-    echo   安装未完全成功（安装器退出码: %INSTALL_RC%）
-    echo   请查看上方红色报错，或脚本目录下的 install.log
-    echo   日志路径: %~dp0install.log
+    echo   Done with errors (code: %RC%)
+    echo   See install.log for details
     echo =============================================
 ) else (
     echo =============================================
-    echo   安装流程已结束（详见上方日志与脚本目录下的 install.log）
-    echo   日志路径: %~dp0install.log
+    echo   Installation complete!
+    echo   See install.log for details
     echo =============================================
 )
 echo.
-echo 按任意键关闭此窗口...
-pause
-exit /b %INSTALL_RC%
+echo Press any key to close...
+pause >nul
+exit /b %RC%
