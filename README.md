@@ -16,28 +16,29 @@
 
 ## 快速开始
 
-### 有网环境（推荐）
+### 半离线安装（推荐，国内用户）
 
-1. **下载**本仓库所有文件（Code → Download ZIP，解压到任意位置）
-2. **右键** `一键安装FlashTap.bat` → **"以管理员方式运行"**
-3. 等待 15–20 分钟，看到 VS Code 弹出即完成
-4. 双击桌面 **"FlashTap"** 快捷方式，开始编程
+1. **下载代码**：本页面绿色 **Code → Download ZIP**，解压到任意位置
+2. **下载离线文件**：从 [Release v0.02](https://github.com/phenoCS/FlashTap/releases/tag/v0.02) 下载 `mingw64.zip` + 3 个 `.vsix` 文件，放到代码解压目录
+3. **右键** `一键安装FlashTap.bat` → **"以管理员方式运行"**
+4. 等待 15–20 分钟，看到 VS Code 弹出即完成
+5. 双击桌面 **"FlashTap"** 快捷方式，开始编程
 
-### 半离线环境（国内网络不稳定）
+> MinGW 编译器和 VS Code 扩展已离线，无需联网下载。Ollama、VS Code 安装器、AI 模型从稳定源在线下载。
 
-如果网络不稳定，可以预置离线文件到解压目录：
+### 纯在线安装（有 VPN / 海外用户）
 
-| 文件 | 作用 | 大小 | 下载地址 |
-|------|------|:--:|------|
-| `OllamaSetup.exe` | Ollama 安装器 | ~800MB | https://ollama.com/download |
-| `VSCodeUserSetup-x64.exe` | VS Code 安装器 | ~90MB | https://code.visualstudio.com/download |
-| `mingw64.zip` | MinGW-w64 编译器 | ~234MB | 从 WinLibs 或 MSYS2 获取 |
-| `models/*.gguf` | 本地 AI 模型 | ~4GB | ModelScope / HuggingFace |
-| `continue.continue.vsix` | Continue 插件（离线） | ~2MB | open-vsx.org |
-| `ms-ceintl.*.vsix` | 中文语言包（离线） | ~5MB | open-vsx.org |
-| `formulahendry.code-runner.vsix` | Code Runner（离线） | ~1MB | open-vsx.org |
+直接 Download ZIP → 解压 → 右键 bat → 以管理员运行。所有组件在线下载。
 
-放好上述文件后，脚本自动跳过联网下载，从本地安装。
+### 可选离线加速
+
+可额外预置以下文件到解压目录，脚本自动跳过联网下载：
+
+| 文件 | 作用 | 大小 |
+|------|------|:--:|
+| `OllamaSetup.exe` | Ollama 安装器 | ~800MB |
+| `VSCodeUserSetup-x64.exe` | VS Code 安装器 | ~90MB |
+| `models/*.gguf` | 本地 AI 模型 | ~4GB |
 
 ## 系统要求
 
