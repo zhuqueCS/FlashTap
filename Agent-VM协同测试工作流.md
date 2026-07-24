@@ -260,3 +260,61 @@ Get-Content C:\flashtap\install.log -Encoding UTF8 -Tail 10
 
 # === 哈希校验 ===
 certutil -hashfile "C:\flashtap\Setup-FlashTap.ps1" SHA256
+```
+
+---
+
+## 8. 无共享文件夹工作流（2026-07-25 收网测试新增）
+
+> 适用场景：需验证"用户在无任何 Agent 辅助的空白电脑上独立完成安装"的真实流程
+
+### 8.1 与标准流程的差异
+
+| 标准流程 (§2) | 无共享文件夹流程 |
+|------|------|
+| 共享文件夹 Z: 映射 | `VBoxManage guestcontrol copyto` 注入文件 |
+| Agent 改代码 → robocopy 同步 | 代码不改，验证 GitHub 现有代码 |
+| 日志在宿主机读 `C:\flashtap\install.log` | 日志在 VM 内，通过 guestcontrol `type` 读取 |
+| 人一键运行共享文件夹中的 bat | 人从桌面文件夹手动运行 |
+
+### 8.2 渐进验收法
+
+每一步验证两个东西：
+1. **下载源可达**（让脚本自然发起连接，日志记录 HTTP 状态码）
+2. **本地离线文件可用**（源验证通过后注入预下载文件 → 脚本检测到已有文件 → 跳过下载）
+
+流程：人启动 bat → Agent 监控日志 → 脚本进入下载阶段 → 日志显示"尝试: xxx源" → HTTP 200 → 源验证完成 → Agent 注入预下载文件 → 脚本跳过下载 → 进入下一阶段。
+
+### 8.3 guestcontrol copyto 注入
+
+```powershell
+VBoxManage guestcontrol flashtap_test copyto --username 61959 --password 123 \
+    "宿主文件完整路径" "VM内完整目标路径"
+```
+
+已知限制：大文件（>1GB）传输时间取决于宿主→VM I/O 带宽；中文路径编码问题；WScript.Shell COM 不可用（快捷方式需 VBS 中转）。
+
+### 8.4 子脚本直接执行（避开死锁）
+
+当 Bug #51 (`Start-Process -Wait`) 死锁在 VM 中 100% 复现时，直接按顺序执行子脚本：
+
+```powershell
+VBoxManage guestcontrol flashtap_test run --username 61959 --password 123 \
+    --exe "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" --wait-stdout -- \
+    -NoProfile -ExecutionPolicy Bypass -Command "
+        $env:FLASHTAP_ORIGINAL_USER='61959';
+        cd 'C:\Users\61959\Desktop\FlashTap-test';
+        .\install-vscode.ps1;
+        .\setup-cpp-env.ps1;
+    "
+```
+
+效果：子脚本在同一进程内顺序执行，不存在进程间 `-Wait` 死锁。
+
+### 8.5 本轮核心发现
+
+1. **快照"干净"需核实**：`pre-final-clean` 声称干净但残留 Ollama/VS Code
+2. **Bug #51 仅在真空白 + 慢 I/O 触发**：历史 7 轮"秒过"是因为快照中软件已预装
+3. **渐进验收法**：从"等 2 小时下载"变为"5 秒验证源 + 1 秒注入文件 + 2 分钟安装"
+4. **所有下载源验证通过**：ModelScope, GitHub, ghproxy, ollama.com, pip 清华镜像全部可达
+5. **VS Code 幽灵路径**：`D:\Microsoft VS Code` 是快照残留，真装后路径为 `C:\Users\<user>\AppData\Local\Programs\Microsoft VS Code`
