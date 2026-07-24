@@ -1218,7 +1218,7 @@ $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
             $lnk.Arguments = $launchArgsStr
             $lnk.Save()
             Start-Process explorer.exe -ArgumentList $lnkPath
-            Start-Sleep 4
+            Start-Sleep 12
             Remove-Item $lnkPath -Force -ErrorAction SilentlyContinue
         }
         Start-Sleep 6
@@ -1246,7 +1246,7 @@ $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
                 $lnk2.Arguments = "--reuse-window $launchArgsStr"
                 $lnk2.Save()
                 Start-Process explorer.exe -ArgumentList $lnkPath2
-                Start-Sleep 3
+                Start-Sleep 10
                 Remove-Item $lnkPath2 -Force -ErrorAction SilentlyContinue
             }
         } catch {}

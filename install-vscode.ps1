@@ -628,14 +628,31 @@ function Install-All-Extensions {
         }
     }
 
-    # 预检：code CLI 是否可用
+    # 预检：code CLI 是否可用（30s 超时保护，防止用户数据未初始化时挂死）
     try {
-        $codeVer = & $cliCmd --version 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Write-Log "[警告] code CLI 不可用，扩展安装将跳过: $codeVer" 'WARNING'
+        $proc = New-Object System.Diagnostics.Process
+        $proc.StartInfo.FileName = $cliCmd
+        $proc.StartInfo.Arguments = '--version'
+        $proc.StartInfo.UseShellExecute = $false
+        $proc.StartInfo.RedirectStandardOutput = $true
+        $proc.StartInfo.RedirectStandardError = $true
+        $proc.StartInfo.CreateNoWindow = $true
+        $proc.Start() | Out-Null
+        $proc.WaitForExit(30000) | Out-Null
+        if ($proc.HasExited) {
+            $codeVer = $proc.StandardOutput.ReadToEnd().Split("`n") | Where-Object { $_ -ne '' }
+            $stderr = $proc.StandardError.ReadToEnd()
+            if ($proc.ExitCode -ne 0) {
+                Write-Log "[警告] code CLI 不可用，扩展安装将跳过: $stderr" 'WARNING'
+                return $false
+            }
+            Write-Log "[信息] code CLI 就绪: $($codeVer[0])" 'INFO'
+        } else {
+            $proc.Kill()
+            Write-Log "[警告] code CLI 超时无响应（30s），扩展安装将跳过" 'WARNING'
             return $false
         }
-        Write-Log "[信息] code CLI 就绪: $($codeVer[0])" 'INFO'
+        $proc.Dispose()
     } catch {
         Write-Log "[警告] code CLI 调用失败，扩展安装将跳过: $($_.Exception.Message)" 'WARNING'
         return $false
